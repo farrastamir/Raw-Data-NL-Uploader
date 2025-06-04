@@ -35,6 +35,11 @@ def upload_dataframe_to_sheet(df, worksheet):
             resize=False
         )
 
+# Menampilkan indikator loading
+def show_loading_message(message):
+    with st.spinner(message):
+        st.write("Sedang memproses, harap tunggu...")
+
 st.title("📁 Upload CSV atau ZIP dan Kirim ke Google Spreadsheet")
 
 choice = st.radio("Pilih metode input:", ["Upload ZIP (berisi CSV)", "Link ZIP", "Upload file CSV"])
@@ -90,16 +95,23 @@ elif choice == "Upload file CSV":
 # === Proses unggah ke Google Sheets ===
 if csv_dfs:
     st.success(f"{len(csv_dfs)} file berhasil diproses.")
+    
+    # Menampilkan loading message
+    show_loading_message("Memproses dan mengunggah data ke Google Spreadsheet...")
+
     sheet_link = st.text_input("Masukkan link lengkap Google Spreadsheet Anda:")
     json_key = st.file_uploader("Upload file service account JSON Google Anda", type="json")
 
     if sheet_link and json_key:
         try:
+            # Ekstrak SPREADSHEET_ID dari link
             match = re.search(r"/d/([a-zA-Z0-9-_]+)", sheet_link)
             if not match:
                 st.error("Link Spreadsheet tidak valid.")
             else:
                 SPREADSHEET_ID = match.group(1)
+                
+                # Autentikasi ke Google Sheets API
                 creds = service_account.Credentials.from_service_account_info(
                     eval(json_key.read().decode()), scopes=["https://www.googleapis.com/auth/spreadsheets"]
                 )
@@ -109,6 +121,12 @@ if csv_dfs:
 
                 for fname, df in csv_dfs:
                     has_tier = 'tier' in df.columns
+                    if has_tier:
+                        st.info(f"✅ Raw Data ONM diterima dari file '{fname}'.")
+                    else:
+                        st.info(f"✅ Raw Data Social Media diterima dari file '{fname}'.")
+
+                    # Pilih target sheet
                     default_target = 'RONM' if has_tier else 'RSOCMED'
                     if default_target not in available_sheets:
                         target_sheet = st.selectbox(
