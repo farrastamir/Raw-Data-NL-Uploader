@@ -140,13 +140,17 @@ if csv_df is not None:
                         clear_range = 'A1:AZ'
                         worksheet.batch_clear([clear_range])
 
-                        # === Upload Data ===
-                        st.write("Mengunggah data ke Google Spreadsheet...")
+                        # === Upload Data dengan Progress Indicator ===
+                        st.write("🚀 Mengunggah data ke Google Spreadsheet...")
+
+                        # Menambahkan indikator loading
+                        progress_bar = st.progress(0)
                         batch_size = 10000
                         total_rows = len(df_selected)
 
                         # Upload batch pertama dengan header
                         set_with_dataframe(worksheet, df_selected.iloc[:batch_size], include_column_header=True, resize=False)
+                        progress_bar.progress(10)  # Update progress pertama
 
                         # Upload sisa batch tanpa header
                         for start in range(batch_size, total_rows, batch_size):
@@ -158,6 +162,9 @@ if csv_df is not None:
                                 include_column_header=False,
                                 resize=False
                             )
+                            # Update progress bar setiap selesai batch
+                            progress = (start + batch_size) / total_rows * 100
+                            progress_bar.progress(progress)
 
                         st.success("✅ Data berhasil diunggah ke sheet 'RSOCMED'.")
                         st.markdown(f"[📄 Lihat Spreadsheet](https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/edit)")
