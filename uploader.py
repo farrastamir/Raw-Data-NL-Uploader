@@ -130,10 +130,7 @@ if csv_df is not None:
                     try:
                         worksheet = sh.worksheet(sheet_name)
                     except gspread.exceptions.WorksheetNotFound:
-                        # Jika sheet tidak ditemukan, tampilkan sheet yang ada untuk dipilih
-                        available_sheets = [ws.title for ws in sh.worksheets()]
-                        sheet_name = st.selectbox("Sheet tidak ditemukan. Pilih sheet tujuan:", available_sheets)
-                        worksheet = sh.worksheet(sheet_name)
+                        worksheet = sh.add_worksheet(title=sheet_name, rows='1000', cols='26')
 
                     # Tentukan range berdasarkan ada tidaknya kolom 'tier'
                     range_to_clear = 'A1:AG' if 'tier' in csv_df.columns else 'A1:AZ'
