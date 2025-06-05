@@ -43,13 +43,12 @@ if choice == "Upload ZIP (berisi CSV)":
                             dfs.append(clean_dataframe(df))
                     csv_df = pd.concat(dfs, ignore_index=True)
                 else:
-                    with zipfile.ZipFile(uploaded_zip, 'r') as zip_ref:
-                        with zip_ref.open(selected) as f:
-                            sample = f.read(1024).decode('utf-8')
-                            delim = detect_delimiter(sample)
-                        with zip_ref.open(selected) as f:
-                            csv_df = pd.read_csv(f, delimiter=delim)
-                            csv_df = clean_dataframe(csv_df)
+                    with zip_ref.open(selected) as f:
+                        sample = f.read(1024).decode('utf-8')
+                        delim = detect_delimiter(sample)
+                    with zip_ref.open(selected) as f:
+                        csv_df = pd.read_csv(f, delimiter=delim)
+                        csv_df = clean_dataframe(csv_df)
 
 elif choice == "Link ZIP":
     url = st.text_input("Masukkan URL file ZIP:")
@@ -121,20 +120,12 @@ if csv_df is not None:
                     gc = gspread.authorize(creds)
                     sh = gc.open_by_key(SPREADSHEET_ID)
 
-                    # Cek apakah kolom 'tier' ada
-                    if 'tier' in csv_df.columns:
-                        sheet_name = 'RONM'
-                    else:
-                        sheet_name = 'RSOCMED'
-                    
                     try:
-                        worksheet = sh.worksheet(sheet_name)
+                        worksheet = sh.worksheet('RSOCMED')
                     except gspread.exceptions.WorksheetNotFound:
-                        worksheet = sh.add_worksheet(title=sheet_name, rows='1000', cols='26')
+                        worksheet = sh.add_worksheet(title='RSOCMED', rows='1000', cols='26')
 
-                    # Tentukan range berdasarkan ada tidaknya kolom 'tier'
-                    range_to_clear = 'A1:AG' if 'tier' in csv_df.columns else 'A1:AZ'
-                    worksheet.batch_clear([range_to_clear])
+                    worksheet.batch_clear(['A1:AZ'])
 
                     batch_size = 10000
                     total_rows = len(df_selected)
@@ -151,7 +142,7 @@ if csv_df is not None:
                             resize=False
                         )
 
-                    st.success(f"✅ Sukses! Data telah diunggah ke sheet '{sheet_name}'.")
+                    st.success("✅ Sukses! Data telah diunggah ke sheet 'RSOCMED'.")
                     st.markdown(f"[📄 Lihat Spreadsheet](https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/edit)")
             except Exception as e:
                 st.error(f"Gagal mengunggah ke Spreadsheet: {e}")
