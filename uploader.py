@@ -5,24 +5,25 @@ import io
 import gspread
 import requests
 import re
+import json
+import traceback
 from gspread_dataframe import set_with_dataframe
 from google.oauth2 import service_account
 
-# Fungsi bantu
+# === Fungsi bantu ===
 def clean_dataframe(df):
     return df.applymap(lambda x: str(x).lstrip("'") if isinstance(x, str) else x)
 
 def detect_delimiter(sample_text):
     return ';' if sample_text.count(';') > sample_text.count(',') else ','
 
-# === PILIH METODE INPUT ===
+# === UI ===
 st.title("Upload CSV atau ZIP dan Kirim ke Google Spreadsheet")
-
 choice = st.radio("Pilih metode input:", ["Upload ZIP (berisi CSV)", "Link ZIP", "Upload file CSV"])
 
 csv_df = None
 
-# === Pilih Metode Input ===
+# === Pilih metode input ===
 if choice == "Upload ZIP (berisi CSV)":
     uploaded_zip = st.file_uploader("Unggah file ZIP", type="zip")
     if uploaded_zip:
@@ -55,10 +56,7 @@ elif choice == "Link ZIP":
     if url:
         response = requests.get(url)
         if response.status_code == 200:
-            zip_filename = "downloaded.zip"
-            with open(zip_filename, 'wb') as f:
-                f.write(response.content)
-            with zipfile.ZipFile(zip_filename, 'r') as zip_ref:
+            with zipfile.ZipFile(io.BytesIO(response.content), 'r') as zip_ref:
                 file_list = [f for f in zip_ref.namelist() if f.lower().endswith('.csv')]
                 if not file_list:
                     st.error("Tidak ada file CSV dalam ZIP.")
@@ -93,12 +91,10 @@ elif choice == "Upload file CSV":
         csv_df = pd.read_csv(uploaded_csv, delimiter=delimiter)
         csv_df = clean_dataframe(csv_df)
 
-else:
-    st.error("Pilihan tidak valid.")
-
-# === Pilih Kolom original_id dan label ===
+# === Lanjut jika sudah ada dataframe ===
 if csv_df is not None:
     st.success("File berhasil diproses.")
+
     start_col = 'original_id'
     end_col = 'label'
 
@@ -107,12 +103,12 @@ if csv_df is not None:
     else:
         start_idx = csv_df.columns.get_loc(start_col)
         end_idx = csv_df.columns.get_loc(end_col)
-
         df_selected = csv_df.iloc[:, start_idx:end_idx + 1]
+
         st.write(f"Kolom yang digunakan: {list(df_selected.columns)}")
         st.write(f"Jumlah baris: {len(df_selected)}")
 
-        # === Link Spreadsheet ===
+        # === Masukkan Link Spreadsheet ===
         sheet_link = st.text_input("Masukkan link lengkap Google Spreadsheet Anda:")
         if sheet_link:
             match = re.search(r"/d/([a-zA-Z0-9-_]+)", sheet_link)
@@ -121,12 +117,16 @@ if csv_df is not None:
             else:
                 SPREADSHEET_ID = match.group(1)
 
-                # === Koneksi dan Sheet ===
-                try:
-                    json_key = st.file_uploader("Upload file Service Account JSON Anda", type="json")
-                    if json_key:
+                # === Upload file JSON Service Account ===
+                json_key = st.file_uploader("Upload file JSON Service Account Anda", type="json")
+                if json_key:
+                    try:
+                        json_data = json.loads(json_key.read().decode('utf-8'))
+
+                        # Autentikasi Google Sheets
                         creds = service_account.Credentials.from_service_account_info(
-                            json_key.read(), scopes=["https://www.googleapis.com/auth/spreadsheets"]
+                            json_data,
+                            scopes=["https://www.googleapis.com/auth/spreadsheets"]
                         )
                         gc = gspread.authorize(creds)
                         sh = gc.open_by_key(SPREADSHEET_ID)
@@ -136,24 +136,18 @@ if csv_df is not None:
                         except gspread.exceptions.WorksheetNotFound:
                             worksheet = sh.add_worksheet(title='RSOCMED', rows='1000', cols='26')
 
-                        # Hapus hanya kolom A:AZ
-                        clear_range = 'A1:AZ'
-                        worksheet.batch_clear([clear_range])
+                        worksheet.batch_clear(['A1:AZ'])
 
-                        # === Upload Data dengan Progress Indicator ===
                         st.write("🚀 Mengunggah data ke Google Spreadsheet...")
-
-                        # Menambahkan indikator loading
                         progress_bar = st.progress(0)
                         with st.spinner('Sedang mengunggah data...'):
                             batch_size = 10000
                             total_rows = len(df_selected)
 
-                            # Upload batch pertama dengan header
+                            # Batch pertama dengan header
                             set_with_dataframe(worksheet, df_selected.iloc[:batch_size], include_column_header=True, resize=False)
-                            progress_bar.progress(10)  # Update progress pertama
+                            progress_bar.progress(10)
 
-                            # Upload sisa batch tanpa header
                             for start in range(batch_size, total_rows, batch_size):
                                 end = min(start + batch_size, total_rows)
                                 set_with_dataframe(
@@ -163,11 +157,12 @@ if csv_df is not None:
                                     include_column_header=False,
                                     resize=False
                                 )
-                                # Update progress bar setiap selesai batch
-                                progress = (start + batch_size) / total_rows * 100
-                                progress_bar.progress(progress)
+                                progress = (start + batch_size) / total_rows
+                                progress_bar.progress(min(progress, 1.0))
 
-                        st.success("✅ Data berhasil diunggah ke sheet 'RSOCMED'.")
+                        st.success("✅ Data berhasil diunggah ke Google Spreadsheet.")
                         st.markdown(f"[📄 Lihat Spreadsheet](https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/edit)")
-                except Exception as e:
-                    st.error(f"Gagal mengakses Spreadsheet: {e}")
+
+                    except Exception as e:
+                        st.error("❌ Gagal mengakses Google Spreadsheet.")
+                        st.text(traceback.format_exc())
