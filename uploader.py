@@ -10,7 +10,7 @@ import traceback
 from gspread_dataframe import set_with_dataframe
 from google.oauth2 import service_account
 
-# === Fungsi bantu ===
+# ========== Fungsi Bantu ==========
 def clean_dataframe(df):
     return df.applymap(lambda x: str(x).lstrip("'") if isinstance(x, str) else x)
 
@@ -24,10 +24,10 @@ def limit_body_column(df, column_name='body', max_length=50000, new_length=30000
         )
     return df
 
-# === UI ===
+# ========== UI ==========
 st.title("Upload CSV/ZIP dan Kirim ke Google Spreadsheet")
 
-# === Input ZIP multi-upload ===
+# === Upload file ZIP (multi-upload) ===
 uploaded_zips = st.file_uploader("Unggah satu atau lebih file ZIP (berisi CSV)", type="zip", accept_multiple_files=True)
 
 csv_df = None
@@ -47,12 +47,11 @@ if uploaded_zips:
         csv_df = pd.concat(dfs, ignore_index=True)
         st.success(f"{len(dfs)} file CSV berhasil digabung ({len(csv_df)} baris total).")
 
-# === Jika ada data, lanjutkan ===
+# ========== Proses jika CSV tersedia ==========
 if csv_df is not None:
-    # === Pilihan Replace atau Append ===
     upload_mode = st.radio("Mode upload ke Spreadsheet:", ["Ganti isi lama (Replace)", "Tambahkan di bawah (Append)"])
 
-    # === Deteksi RONM atau RSOCMED ===
+    # === Deteksi Sheet Target ===
     if 'tier' in csv_df.columns:
         target_worksheet = 'RONM'
     elif 'original_id' in csv_df.columns and 'label' in csv_df.columns:
@@ -68,18 +67,61 @@ if csv_df is not None:
     st.write(f"Kolom yang digunakan: {list(csv_df.columns)}")
     st.write(f"Jumlah baris: {len(csv_df)}")
 
-    # === Input Spreadsheet dan JSON ===
+    # === Input Spreadsheet Link ===
     sheet_link = st.text_input("Masukkan link lengkap Google Spreadsheet Anda:")
-    json_key = st.file_uploader("Upload file JSON Service Account Anda", type="json")
 
-    if sheet_link and json_key:
+    # === Pilih Metode Autentikasi JSON ===
+    json_auth_option = st.radio(
+        "Pilih metode autentikasi:",
+        ["Gunakan JSON default dari Google Drive", "Unggah file JSON Anda sendiri"]
+    )
+
+    json_data = None
+    if json_auth_option == "Gunakan JSON default dari Google Drive":
+        default_json_link = "https://drive.google.com/file/d/1VRpKOpI3R918d5voY70wi9CsDRBwDuRl/view?usp=drive_link"
+        match_id = re.search(r"/d/([a-zA-Z0-9-_]+)", default_json_link)
+        if not match_id:
+            st.error("Link Google Drive untuk JSON default tidak valid.")
+            st.stop()
+
+        file_id = match_id.group(1)
+        download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
+
+        try:
+            json_response = requests.get(download_url)
+            if json_response.status_code == 200:
+                json_data = json.loads(json_response.content.decode('utf-8'))
+                st.success("✅ JSON berhasil diambil dari Google Drive.")
+            else:
+                st.error("❌ Gagal mengunduh JSON default.")
+                st.stop()
+        except Exception as e:
+            st.error("❌ Error saat mengambil JSON default.")
+            st.text(str(e))
+            st.stop()
+
+    elif json_auth_option == "Unggah file JSON Anda sendiri":
+        uploaded_json = st.file_uploader("Unggah file Service Account JSON Anda", type="json")
+        if uploaded_json is not None:
+            try:
+                json_data = json.loads(uploaded_json.read().decode('utf-8'))
+                st.success("✅ File JSON berhasil diunggah.")
+            except Exception as e:
+                st.error("❌ Gagal memproses file JSON.")
+                st.text(str(e))
+                st.stop()
+        else:
+            st.warning("Harap unggah file JSON untuk melanjutkan.")
+            st.stop()
+
+    # === Autentikasi & Proses Spreadsheet ===
+    if sheet_link and json_data:
         match = re.search(r"/d/([a-zA-Z0-9-_]+)", sheet_link)
         if not match:
             st.error("Link Spreadsheet tidak valid.")
         else:
             SPREADSHEET_ID = match.group(1)
             try:
-                json_data = json.loads(json_key.read().decode('utf-8'))
                 creds = service_account.Credentials.from_service_account_info(
                     json_data,
                     scopes=["https://www.googleapis.com/auth/spreadsheets"]
@@ -92,11 +134,11 @@ if csv_df is not None:
                 except gspread.exceptions.WorksheetNotFound:
                     worksheet = sh.add_worksheet(title=target_worksheet, rows='1000', cols='26')
 
-                # === Upload Mode: Replace / Append ===
+                # Replace / Append
                 if upload_mode == "Ganti isi lama (Replace)":
                     worksheet.batch_clear(['A1:AZ'])
                     next_row = 1
-                else:  # Append
+                else:
                     values = worksheet.get_all_values()
                     next_row = len(values) + 1 if values else 1
 
