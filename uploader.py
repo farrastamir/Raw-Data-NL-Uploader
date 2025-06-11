@@ -17,16 +17,18 @@ def detect_delimiter(sample_text: str) -> str:
     """Deteksi delimiter dominan (',' atau ';')."""
     return ";" if sample_text.count(";") > sample_text.count(",") else ","
 
-def limit_body_column(df: pd.DataFrame,
-                      column_name="body",
-                      max_length=50_000,
-                      new_length=30_000) -> pd.DataFrame:
-    """Pangkas kolom `body` yg terlalu panjang."""
-    if column_name in df.columns:
-        df[column_name] = df[column_name].apply(
-            lambda x: x[:new_length] if isinstance(x, str) and len(x) > max_length else x
-        )
-    return df
+def truncate_long_texts(df: pd.DataFrame,
+                        max_allowed: int = 50_000,
+                        trunc_length: int = 20_000) -> pd.DataFrame:
+    """
+    Jika ada sel (string) lebih panjang dari `max_allowed`,
+    potong menjadi `trunc_length` pertama.
+    """
+    def _maybe_trunc(x):
+        if isinstance(x, str) and len(x) > max_allowed:
+            return x[:trunc_length]
+        return x
+    return df.applymap(_maybe_trunc)
 
 def _fix_time_dots(t: str) -> str:
     """14.26.28 → 14:26:28, 13.00 → 13:00."""
@@ -50,12 +52,12 @@ def standardize_dates(df: pd.DataFrame) -> pd.DataFrame:
             if pd.isna(val):
                 return val
             s = str(val).strip()
-            # pisah tanggal & waktu
+            # Pisah tanggal & waktu
             date_part, time_part = (s.split(" ", 1) + ["00:00:00"])[:2]
             time_part = _fix_time_dots(time_part)
             date_part = date_part.replace("-", "/")
 
-            # lengkapi waktu
+            # Lengkapi waktu
             if time_part.count(":") == 0:
                 time_part += ":00"
             if time_part.count(":") == 1:
@@ -91,7 +93,7 @@ def load_from_url(url: str) -> List[pd.DataFrame]:
                 for name in z.namelist():
                     if name.lower().endswith(".csv"):
                         dfs.append(clean_dataframe(read_csv_from_bytes(z.read(name))))
-        else:  # anggap CSV
+        else:  # Anggap CSV
             dfs.append(clean_dataframe(read_csv_from_bytes(content)))
     except Exception as exc:
         st.error(f"Gagal mengambil {url} → {exc}")
@@ -232,7 +234,8 @@ try:
         if df is None:
             continue
 
-        df = limit_body_column(standardize_dates(df))
+        # --- normalisasi tanggal + pangkas teks panjang ---
+        df = truncate_long_texts(standardize_dates(df))
 
         # buka / buat worksheet
         try:
