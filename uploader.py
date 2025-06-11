@@ -1,6 +1,6 @@
 # =====================  IMPORT  =====================
 import streamlit as st
-import zipfile, io, re, json, traceback, requests
+import zipfile, io, re, json, traceback, requests, time
 import pandas as pd
 import gspread
 from gspread_dataframe import set_with_dataframe
@@ -13,29 +13,33 @@ def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     """Hilangkan apostrof ('123) yang kadang muncul dari Excel/Sheets."""
     return df.applymap(lambda x: str(x).lstrip("'") if isinstance(x, str) else x)
 
+
 def detect_delimiter(sample_text: str) -> str:
     """Deteksi delimiter dominan (',' atau ';')."""
     return ";" if sample_text.count(";") > sample_text.count(",") else ","
+
 
 def truncate_long_texts(df: pd.DataFrame,
                         max_allowed: int = 50_000,
                         trunc_length: int = 20_000) -> pd.DataFrame:
     """
-    Jika ada sel (string) lebih panjang dari `max_allowed`,
+    Jika ada sel string lebih panjang dari `max_allowed`,
     potong menjadi `trunc_length` pertama.
     """
-    def _maybe_trunc(x):
-        if isinstance(x, str) and len(x) > max_allowed:
-            return x[:trunc_length]
-        return x
-    return df.applymap(_maybe_trunc)
+    def _trunc(x):
+        return x[:trunc_length] if isinstance(x, str) and len(x) > max_allowed else x
+    return df.applymap(_trunc)
+
 
 def _fix_time_dots(t: str) -> str:
     """14.26.28 → 14:26:28, 13.00 → 13:00."""
-    return re.sub(r"(\d{1,2})\.(\d{2})(?:\.(\d{2}))?",
-                  lambda m: f"{m.group(1)}:{m.group(2)}" +
-                            (f":{m.group(3)}" if m.group(3) else ""),
-                  t)
+    return re.sub(
+        r"(\d{1,2})\.(\d{2})(?:\.(\d{2}))?",
+        lambda m: f"{m.group(1)}:{m.group(2)}" +
+                  (f":{m.group(3)}" if m.group(3) else ""),
+        t,
+    )
+
 
 def _to_full_year(year: int) -> int:
     """2-digit year → 4-digit (≤30 → 20xx, sisanya 19xx)."""
@@ -43,15 +47,18 @@ def _to_full_year(year: int) -> int:
         return 2000 + year if year <= 30 else 1900 + year
     return year
 
+
 def standardize_dates(df: pd.DataFrame) -> pd.DataFrame:
     """Ubah kolom date_created / date_published → 'dd/mm/yyyy hh.mm.ss'."""
     for col in ("date_created", "date_published"):
         if col not in df.columns:
             continue
+
         def _convert(val):
             if pd.isna(val):
                 return val
             s = str(val).strip()
+
             # Pisah tanggal & waktu
             date_part, time_part = (s.split(" ", 1) + ["00:00:00"])[:2]
             time_part = _fix_time_dots(time_part)
@@ -71,14 +78,17 @@ def standardize_dates(df: pd.DataFrame) -> pd.DataFrame:
             except Exception:
                 dt_obj = pd.NaT
             return dt_obj.strftime("%d/%m/%Y %H.%M.%S") if pd.notna(dt_obj) else val
+
         df[col] = df[col].apply(_convert)
     return df
+
 
 def read_csv_from_bytes(b: bytes) -> pd.DataFrame:
     """Baca CSV dari bytes dengan delimiter otomatis."""
     sample = b[:2048].decode("utf-8", errors="ignore")
-    delim  = detect_delimiter(sample)
+    delim = detect_delimiter(sample)
     return pd.read_csv(io.BytesIO(b), delimiter=delim)
+
 
 def load_from_url(url: str) -> List[pd.DataFrame]:
     """Unduh file CSV/ZIP via URL → list DataFrame."""
@@ -87,12 +97,15 @@ def load_from_url(url: str) -> List[pd.DataFrame]:
         r = requests.get(url.strip())
         r.raise_for_status()
         content = r.content
+
         # ZIP?
         if zipfile.is_zipfile(io.BytesIO(content)):
             with zipfile.ZipFile(io.BytesIO(content), "r") as z:
                 for name in z.namelist():
                     if name.lower().endswith(".csv"):
-                        dfs.append(clean_dataframe(read_csv_from_bytes(z.read(name))))
+                        dfs.append(
+                            clean_dataframe(read_csv_from_bytes(z.read(name)))
+                        )
         else:  # Anggap CSV
             dfs.append(clean_dataframe(read_csv_from_bytes(content)))
     except Exception as exc:
@@ -100,10 +113,49 @@ def load_from_url(url: str) -> List[pd.DataFrame]:
     return dfs
 
 
+def write_dataframe_in_chunks(ws,
+                              df: pd.DataFrame,
+                              start_row: int,
+                              replace_mode: bool):
+    """
+    Kirim DataFrame ke worksheet dalam blok ≤ ~9 000 sel (±2 MB).
+    Jika masih kena error 500, blok diperkecil separuh lalu retry.
+    """
+    MAX_CELLS = 9_000
+    n_cols = len(df.columns)
+    rows_per_batch = max(1, MAX_CELLS // n_cols)
+
+    row_ptr = 0
+    total_rows = len(df)
+    header_written = False
+
+    while row_ptr < total_rows:
+        chunk = df.iloc[row_ptr: row_ptr + rows_per_batch]
+        try:
+            set_with_dataframe(
+                ws,
+                chunk,
+                include_column_header=(not header_written and replace_mode),
+                row=start_row + row_ptr,
+                resize=False,
+            )
+            header_written = True
+            row_ptr += len(chunk)
+        except gspread.exceptions.APIError as e:
+            if "500" in str(e) and rows_per_batch > 1:
+                rows_per_batch = rows_per_batch // 2
+                st.warning(f"⚠️ 500 error – mengecilkan batch menjadi {rows_per_batch} baris…")
+                time.sleep(2)  # back-off
+            else:
+                raise
+
+
 # =====================  UI  =====================
-st.set_page_config(page_title="Upload CSV/ZIP ➜ Google Sheets",
-                   page_icon="📄",
-                   layout="wide")
+st.set_page_config(
+    page_title="Upload CSV/ZIP ➜ Google Sheets",
+    page_icon="📄",
+    layout="wide",
+)
 st.title("Upload / Ambil CSV atau ZIP ➜ Google Spreadsheet")
 
 # ----------  1️⃣  PILIH SUMBER DATA  ----------
@@ -111,15 +163,16 @@ st.header("1️⃣ Pilih sumber data")
 
 src_choice = st.selectbox(
     "Bagaimana Anda ingin memasukkan data?",
-    ("Unggah ZIP", "Unggah CSV", "Masukkan tautan (CSV / ZIP)")
+    ("Unggah ZIP", "Unggah CSV", "Masukkan tautan (CSV / ZIP)"),
 )
 
 dfs: List[pd.DataFrame] = []
 
 # ----------  Pengumpulan data ----------
 if src_choice == "Unggah ZIP":
-    zip_files = st.file_uploader("Unggah satu / lebih file ZIP",
-                                 type="zip", accept_multiple_files=True)
+    zip_files = st.file_uploader(
+        "Unggah satu / lebih file ZIP", type="zip", accept_multiple_files=True
+    )
     for f in zip_files:
         with zipfile.ZipFile(f, "r") as z:
             for name in z.namelist():
@@ -127,8 +180,9 @@ if src_choice == "Unggah ZIP":
                     dfs.append(clean_dataframe(read_csv_from_bytes(z.read(name))))
 
 elif src_choice == "Unggah CSV":
-    csv_files = st.file_uploader("Unggah satu / lebih file CSV",
-                                 type="csv", accept_multiple_files=True)
+    csv_files = st.file_uploader(
+        "Unggah satu / lebih file CSV", type="csv", accept_multiple_files=True
+    )
     for f in csv_files:
         dfs.append(clean_dataframe(read_csv_from_bytes(f.read())))
 
@@ -150,7 +204,7 @@ st.header("2️⃣ Pengaturan Spreadsheet")
 sheet_link = st.text_input("Tempel link Google Spreadsheet:")
 upload_mode = st.radio(
     "Mode upload:",
-    ("Ganti isi lama (Replace)", "Tambahkan di bawah (Append)")
+    ("Ganti isi lama (Replace)", "Tambahkan di bawah (Append)"),
 )
 
 if not sheet_link:
@@ -162,7 +216,7 @@ st.header("3️⃣ Autentikasi Google Sheets")
 with st.form("json_auth_form"):
     json_opt = st.radio(
         "Pilih sumber Service-Account JSON:",
-        ("Gunakan JSON default di Drive", "Unggah file JSON sendiri")
+        ("Gunakan JSON default di Drive", "Unggah file JSON sendiri"),
     )
     uploaded_json = None
     if json_opt == "Unggah file JSON sendiri":
@@ -179,7 +233,9 @@ try:
             "https://drive.google.com/file/d/1VRpKOpI3R918d5voY70wi9CsDRBwDuRl/view?usp=drive_link"
         )
         fid = re.search(r"/d/([\w-]+)", default_link).group(1)
-        r = requests.get(f"https://drive.google.com/uc?export=download&id={fid}")
+        r = requests.get(
+            f"https://drive.google.com/uc?export=download&id={fid}", timeout=30
+        )
         r.raise_for_status()
         json_data = json.loads(r.content.decode())
         st.success("✅ JSON default berhasil diambil.")
@@ -200,8 +256,8 @@ for df in dfs:
         ronm_dfs.append(df)
     elif {"original_id", "label"}.issubset(df.columns):
         start = df.columns.get_loc("original_id")
-        end   = df.columns.get_loc("label")
-        rsocmed_dfs.append(df.iloc[:, start:end + 1])
+        end = df.columns.get_loc("label")
+        rsocmed_dfs.append(df.iloc[:, start : end + 1])
     else:
         unknown_dfs.append(df)
 
@@ -210,7 +266,7 @@ if not ronm_dfs and not rsocmed_dfs:
     st.stop()
 
 targets = {
-    "RONM":    pd.concat(ronm_dfs,    ignore_index=True) if ronm_dfs    else None,
+    "RONM": pd.concat(ronm_dfs, ignore_index=True) if ronm_dfs else None,
     "RSOCMED": pd.concat(rsocmed_dfs, ignore_index=True) if rsocmed_dfs else None,
 }
 
@@ -229,44 +285,39 @@ try:
     gc = gspread.authorize(creds)
     sh = gc.open_by_key(SPREADSHEET_ID)
 
-    st.write("🚀 Mengunggah data…")
+    st.write("🚀 Mengunggah data …")
     for ws_name, df in targets.items():
         if df is None:
             continue
 
-        # --- normalisasi tanggal + pangkas teks panjang ---
+        # Normalisasi
         df = truncate_long_texts(standardize_dates(df))
 
-        # buka / buat worksheet
+        # Buka / buat worksheet
         try:
             ws = sh.worksheet(ws_name)
         except gspread.exceptions.WorksheetNotFound:
             ws = sh.add_worksheet(title=ws_name, rows="1000", cols="26")
 
-        # tentukan baris awal
-        if upload_mode.startswith("Ganti"):
+        # Tentukan baris awal
+        replace = upload_mode.startswith("Ganti")
+        if replace:
             ws.batch_clear(["A1:AZ"])
             next_row = 1
         else:
             existing = ws.get_all_values()
             next_row = len(existing) + 1 if existing else 1
 
-        # tulis (dengan header kalau replace)
-        batch_size = 10_000
-        total = len(df)
-        for i in range(0, total, batch_size):
-            chunk = df.iloc[i:i + batch_size]
-            set_with_dataframe(
-                ws,
-                chunk,
-                include_column_header=(next_row == 1 and i == 0),
-                row=next_row + i if next_row > 1 else i + 1,
-                resize=False
-            )
+        # Tulis dengan batch kecil
+        write_dataframe_in_chunks(
+            ws, df, start_row=next_row, replace_mode=replace
+        )
 
         st.success(f"✅ {len(df)} baris → worksheet **{ws_name}**")
 
-    st.markdown(f"[📄 Buka Spreadsheet](https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/edit)")
+    st.markdown(
+        f"[📄 Buka Spreadsheet](https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/edit)"
+    )
 except Exception:
     st.error("❌ Terjadi kesalahan saat mengakses / menulis Spreadsheet.")
     st.text(traceback.format_exc())
