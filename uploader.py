@@ -118,12 +118,10 @@ def write_dataframe_in_chunks(ws,
                               start_row: int,
                               replace_mode: bool):
     """
-    Kirim DataFrame ke worksheet dalam blok ≤ ~9 000 sel (±2 MB).
-    Jika masih kena error 500, blok diperkecil separuh lalu retry.
+    Kirim DataFrame ke worksheet dalam batch 10.000 baris.
+    Jika kena error 500, batch diperkecil separuh lalu retry.
     """
-    MAX_CELLS = 9_000
-    n_cols = len(df.columns)
-    rows_per_batch = max(1, MAX_CELLS // n_cols)
+    rows_per_batch = 10_000  # Tetapkan jumlah baris per batch
 
     row_ptr = 0
     total_rows = len(df)
@@ -143,9 +141,9 @@ def write_dataframe_in_chunks(ws,
             row_ptr += len(chunk)
         except gspread.exceptions.APIError as e:
             if "500" in str(e) and rows_per_batch > 1:
-                rows_per_batch = rows_per_batch // 2
+                rows_per_batch = max(1, rows_per_batch // 2)
                 st.warning(f"⚠️ 500 error – mengecilkan batch menjadi {rows_per_batch} baris…")
-                time.sleep(2)  # back-off
+                time.sleep(2)
             else:
                 raise
 
