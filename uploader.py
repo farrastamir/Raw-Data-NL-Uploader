@@ -5,8 +5,7 @@ import pandas as pd
 import gspread
 from gspread_dataframe import set_with_dataframe
 from google.oauth2 import service_account
-from typing import List
-
+from typing import List, Any
 
 # =====================  FUNGSI BANTU  =====================
 def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
@@ -112,23 +111,31 @@ def load_from_url(url: str) -> List[pd.DataFrame]:
         st.error(f"Gagal mengambil {url} → {exc}")
     return dfs
 
-
+# --- FUNGSI DIPERBARUI ---
 def write_dataframe_in_chunks(ws,
                               df: pd.DataFrame,
                               start_row: int,
-                              replace_mode: bool):
+                              replace_mode: bool,
+                              progress_placeholder: Any): # Parameter baru
     """
-    Kirim DataFrame ke worksheet dalam batch 10.000 baris.
-    Jika kena error 500, batch diperkecil separuh lalu retry.
+    Kirim DataFrame ke worksheet dalam batch.
+    Menampilkan progres dan menangani error 500.
     """
-    rows_per_batch = 10_000  # Tetapkan jumlah baris per batch
-
+    rows_per_batch = 10_000
     row_ptr = 0
     total_rows = len(df)
     header_written = False
 
     while row_ptr < total_rows:
         chunk = df.iloc[row_ptr: row_ptr + rows_per_batch]
+
+        # --- BARU: Tampilkan progres ---
+        start_display = row_ptr + 1
+        end_display = min(row_ptr + len(chunk), total_rows)
+        progress_placeholder.info(
+            f"⏳ Mengunggah baris {start_display} - {end_display} dari {total_rows}..."
+        )
+
         try:
             set_with_dataframe(
                 ws,
@@ -146,7 +153,8 @@ def write_dataframe_in_chunks(ws,
                 time.sleep(2)
             else:
                 raise
-
+    
+    progress_placeholder.empty() # Kosongkan placeholder setelah selesai
 
 # =====================  UI  =====================
 st.set_page_config(
@@ -283,11 +291,13 @@ try:
     gc = gspread.authorize(creds)
     sh = gc.open_by_key(SPREADSHEET_ID)
 
-    st.write("🚀 Mengunggah data …")
+    st.write("🚀 Memulai proses unggah...")
     for ws_name, df in targets.items():
-        if df is None:
+        if df is None or df.empty:
             continue
-
+        
+        st.subheader(f"Mengunggah ke sheet: `{ws_name}`")
+        
         # Normalisasi
         df = truncate_long_texts(standardize_dates(df))
 
@@ -295,26 +305,39 @@ try:
         try:
             ws = sh.worksheet(ws_name)
         except gspread.exceptions.WorksheetNotFound:
-            ws = sh.add_worksheet(title=ws_name, rows="1000", cols="26")
+            st.info(f"Worksheet '{ws_name}' tidak ditemukan, membuat baru...")
+            ws = sh.add_worksheet(title=ws_name, rows="1000", cols="50") # menambah kolom default
 
         # Tentukan baris awal
         replace = upload_mode.startswith("Ganti")
         if replace:
-            ws.batch_clear(["A1:AZ"])
+            # --- LOGIKA DIPERBARUI ---
+            if ws_name == "RONM":
+                clear_range = 'A:AG'
+            else: # Asumsi untuk RSOCMED dan lainnya
+                clear_range = 'A:AZ'
+            
+            st.info(f"Membersihkan kolom {clear_range} di sheet '{ws_name}'...")
+            ws.batch_clear([clear_range])
             next_row = 1
         else:
-            existing = ws.get_all_values()
-            next_row = len(existing) + 1 if existing else 1
+            existing_values = ws.get_all_values()
+            next_row = len(existing_values) + 1 if existing_values else 1
 
-        # Tulis dengan batch kecil
+        # --- PANGGIL FUNGSI DENGAN PLACEHOLDER ---
+        progress_placeholder = st.empty() # Buat placeholder untuk pesan progres
         write_dataframe_in_chunks(
-            ws, df, start_row=next_row, replace_mode=replace
+            ws, df, 
+            start_row=next_row, 
+            replace_mode=replace, 
+            progress_placeholder=progress_placeholder # Kirim placeholder ke fungsi
         )
 
-        st.success(f"✅ {len(df)} baris → worksheet **{ws_name}**")
+        st.success(f"✅ Selesai! {len(df)} baris berhasil diunggah ke worksheet **{ws_name}**")
 
+    st.balloons()
     st.markdown(
-        f"[📄 Buka Spreadsheet](https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/edit)"
+        f"### [📄 Buka Spreadsheet](https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/edit)"
     )
 except Exception:
     st.error("❌ Terjadi kesalahan saat mengakses / menulis Spreadsheet.")
