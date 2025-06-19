@@ -141,6 +141,7 @@ def write_dataframe_in_chunks(ws,
             set_with_dataframe(
                 ws,
                 chunk,
+                # Header dari DataFrame hanya ditulis jika replace_mode=True
                 include_column_header=(not header_written and replace_mode),
                 row=start_row + row_ptr,
                 resize=False,
@@ -270,7 +271,6 @@ try:
     # --- Klasifikasikan DataFrame ---
     ronm_dfs, rsocmed_dfs, rfollower_dfs, unknown_dfs = [], [], [], []
     
-    # === PERUBAHAN DIMULAI DI SINI ===
     for df in dfs:
         cols = {str(c).lower() for c in df.columns}
         if "tier" in cols:
@@ -282,15 +282,12 @@ try:
                 start_idx = df.columns.get_loc(start_col)
                 end_idx = df.columns.get_loc(end_col)
                 rsocmed_dfs.append(df.iloc[:, start_idx : end_idx + 1])
-        # MODIFIKASI: Klasifikasi RFOLLOWER berdasarkan keberadaan kolom 'social_media'
         elif "social_media" in cols:
             rfollower_dfs.append(df)
         else:
             unknown_dfs.append(df)
-    # === PERUBAHAN SELESAI DI SINI ===
 
     if not ronm_dfs and not rsocmed_dfs and not rfollower_dfs:
-        # Pesan error disesuaikan dengan logika baru
         st.error("❌ Tidak ada data yang cocok dengan skema RONM (kolom 'tier'), RSOCMED (kolom 'original_id' & 'label'), maupun RFOLLOWER (kolom 'social_media').")
         st.stop()
 
@@ -322,29 +319,44 @@ try:
             st.info(f"Worksheet '{ws_name}' tidak ditemukan, membuat baru...")
             ws = sh.add_worksheet(title=ws_name, rows="1000", cols="50")
 
+        # === PERUBAHAN DIMULAI DI SINI ===
         replace = upload_mode.startswith("Ganti")
-        if replace:
-            if ws_name == "RONM":
-                clear_range = 'A:AG'
-            elif ws_name == "RSOCMED":
-                clear_range = 'A:AZ'
-            else: 
-                clear_range = 'A:ZZ'
 
-            st.info(f"Membersihkan kolom {clear_range} di sheet '{ws_name}'...")
-            ws.batch_clear([clear_range])
-            next_row = 1
+        # Logika khusus HANYA untuk sheet RFOLLOWER
+        if ws_name == "RFOLLOWER":
+            st.info(f"Mode RFOLLOWER: Menghapus data lama (mulai dari baris 2) dan menulis ulang.")
+            # Selalu bersihkan sheet dari baris ke-2 ke bawah untuk RFOLLOWER
+            ws.batch_clear(['A2:ZZ']) 
+            # Tetapkan baris awal untuk penulisan data adalah 2
+            next_row = 2
+            # Paksa mode 'replace' menjadi False untuk fungsi di bawahnya
+            # agar header dari DataFrame TIDAK ikut ditulis.
+            # Header di baris 1 diasumsikan sudah ada dan permanen.
+            effective_replace_mode = False
         else:
-            existing_values = ws.get_all_values()
-            next_row = len(existing_values) + 1 if existing_values else 1
-
+            # Logika original untuk sheet lain (RONM, RSOCMED)
+            effective_replace_mode = replace
+            if effective_replace_mode: # Jika mode 'Ganti'
+                if ws_name == "RONM": clear_range = 'A:AG'
+                elif ws_name == "RSOCMED": clear_range = 'A:AZ'
+                else: clear_range = 'A:ZZ' # Fallback
+                
+                st.info(f"Membersihkan kolom {clear_range} di sheet '{ws_name}'...")
+                ws.batch_clear([clear_range])
+                next_row = 1
+            else: # Jika mode 'Tambah'
+                existing_values = ws.get_all_values()
+                next_row = len(existing_values) + 1 if existing_values else 1
+        
+        # Panggil fungsi tulis dengan parameter yang sudah disesuaikan
         progress_placeholder = st.empty()
         write_dataframe_in_chunks(
             ws, df, 
             start_row=next_row, 
-            replace_mode=replace, 
+            replace_mode=effective_replace_mode, # Gunakan mode yang telah disesuaikan
             progress_placeholder=progress_placeholder
         )
+        # === PERUBAHAN SELESAI DI SINI ===
 
         st.success(f"✅ Selesai! {len(df)} baris berhasil diunggah ke worksheet **{ws_name}**")
         any_upload_success = True
