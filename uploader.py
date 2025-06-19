@@ -324,15 +324,17 @@ try:
 
         # Logika khusus HANYA untuk sheet RFOLLOWER
         if ws_name == "RFOLLOWER":
-            st.info(f"Mode RFOLLOWER: Menghapus data lama (mulai dari baris 2) dan menulis ulang.")
-            # Selalu bersihkan sheet dari baris ke-2 ke bawah untuk RFOLLOWER
+            st.info(f"Mode RFOLLOWER: Menulis ulang data dari file (termasuk header) mulai dari baris 2.")
+            # Selalu bersihkan sheet dari baris ke-2 ke bawah untuk RFOLLOWER.
             ws.batch_clear(['A2:ZZ']) 
-            # Tetapkan baris awal untuk penulisan data adalah 2
+            
+            # Tetapkan baris awal untuk penulisan data adalah 2.
+            # Header dari file akan ditulis di baris 2, data di baris 3, dst.
             next_row = 2
-            # Paksa mode 'replace' menjadi False untuk fungsi di bawahnya
-            # agar header dari DataFrame TIDAK ikut ditulis.
-            # Header di baris 1 diasumsikan sudah ada dan permanen.
-            effective_replace_mode = False
+            
+            # Paksa mode 'replace' menjadi True agar fungsi di bawahnya
+            # MENYERTAKAN header dari DataFrame saat menulis.
+            effective_replace_mode = True
         else:
             # Logika original untuk sheet lain (RONM, RSOCMED)
             effective_replace_mode = replace
@@ -347,6 +349,9 @@ try:
             else: # Jika mode 'Tambah'
                 existing_values = ws.get_all_values()
                 next_row = len(existing_values) + 1 if existing_values else 1
+                # Dalam mode tambah, kita tidak ingin menulis header,
+                # jadi pastikan effective_replace_mode adalah False.
+                effective_replace_mode = False
         
         # Panggil fungsi tulis dengan parameter yang sudah disesuaikan
         progress_placeholder = st.empty()
