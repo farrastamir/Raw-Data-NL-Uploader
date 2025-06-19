@@ -1,4 +1,4 @@
-# =====================  IMPORT  =====================
+# =====================  IMPORT  =====================
 import streamlit as st
 import zipfile, io, re, json, traceback, requests, time
 import pandas as pd
@@ -7,7 +7,7 @@ from gspread_dataframe import set_with_dataframe
 from google.oauth2 import service_account
 from typing import List, Any
 
-# =====================  FUNGSI BANTU  =====================
+# =====================  FUNGSI BANTU  =====================
 def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     """Hilangkan apostrof ('123) yang kadang muncul dari Excel/Sheets."""
     return df.applymap(lambda x: str(x).lstrip("'") if isinstance(x, str) else x)
@@ -84,7 +84,6 @@ def standardize_dates(df: pd.DataFrame) -> pd.DataFrame:
 
 def read_csv_from_bytes(b: bytes) -> pd.DataFrame:
     """Baca CSV dari bytes dengan delimiter otomatis."""
-    # <--- MODIFIKASI: Menambahkan penanganan delimiter untuk file spesifik Anda
     try:
         sample = b[:2048].decode("utf-8", errors="ignore")
         delim = detect_delimiter(sample)
@@ -158,7 +157,7 @@ def write_dataframe_in_chunks(ws,
     
     progress_placeholder.empty()
 
-# =====================  UI  =====================
+# =====================  UI  =====================
 st.set_page_config(
     page_title="Upload CSV/ZIP ➜ Google Sheets",
     page_icon="📄",
@@ -166,7 +165,7 @@ st.set_page_config(
 )
 st.title("Upload / Ambil CSV atau ZIP ➜ Google Spreadsheet")
 
-# ----------  1️⃣  PILIH SUMBER DATA  ----------
+# ----------  1️⃣  PILIH SUMBER DATA  ----------
 st.header("1️⃣ Pilih sumber data")
 
 src_choice = st.selectbox(
@@ -209,7 +208,7 @@ if not dfs:
 
 st.success(f"✅ Terkumpul {len(dfs)} file.")
 
-# ----------  2️⃣  PENGATURAN SPREADSHEET  ----------
+# ----------  2️⃣  PENGATURAN SPREADSHEET  ----------
 st.header("2️⃣ Pengaturan Spreadsheet")
 
 sheet_link = st.text_input("Tempel link Google Spreadsheet:", key="sheet_link_input")
@@ -222,7 +221,7 @@ upload_mode = st.radio(
 if not sheet_link:
     st.stop()
 
-# ----------  3️⃣  AUTENTIKASI GOOGLE SHEETS  ----------
+# ----------  3️⃣  AUTENTIKASI GOOGLE SHEETS  ----------
 st.header("3️⃣ Autentikasi Google Sheets")
 
 with st.form("json_auth_form"):
@@ -239,7 +238,7 @@ with st.form("json_auth_form"):
 if not proceed:
     st.stop()
 
-# ----------  Proses Utama (Ekstraksi ID dan Upload) ----------
+# ----------  Proses Utama (Ekstraksi ID dan Upload) ----------
 m = re.search(r"/d/([\w-]+)", sheet_link)
 if not m:
     st.error("Link Spreadsheet tidak valid.")
@@ -271,9 +270,7 @@ try:
     # --- Klasifikasikan DataFrame ---
     ronm_dfs, rsocmed_dfs, rfollower_dfs, unknown_dfs = [], [], [], []
     
-    # <--- PERBAIKAN UTAMA: Daftar kata kunci untuk deteksi tanggal/waktu
-    date_keywords = ['date', 'tanggal', 'waktu', 'time']
-
+    # === PERUBAHAN DIMULAI DI SINI ===
     for df in dfs:
         cols = {str(c).lower() for c in df.columns}
         if "tier" in cols:
@@ -285,14 +282,16 @@ try:
                 start_idx = df.columns.get_loc(start_col)
                 end_idx = df.columns.get_loc(end_col)
                 rsocmed_dfs.append(df.iloc[:, start_idx : end_idx + 1])
-        # <--- PERBAIKAN UTAMA: Menggunakan daftar kata kunci untuk klasifikasi
-        elif any(any(keyword in col for keyword in date_keywords) for col in cols):
+        # MODIFIKASI: Klasifikasi RFOLLOWER berdasarkan keberadaan kolom 'social_media'
+        elif "social_media" in cols:
             rfollower_dfs.append(df)
         else:
             unknown_dfs.append(df)
+    # === PERUBAHAN SELESAI DI SINI ===
 
     if not ronm_dfs and not rsocmed_dfs and not rfollower_dfs:
-        st.error("❌ Tidak ada data yang cocok dengan skema RONM, RSOCMED, maupun RFOLLOWER (berdasarkan kolom tanggal/waktu).")
+        # Pesan error disesuaikan dengan logika baru
+        st.error("❌ Tidak ada data yang cocok dengan skema RONM (kolom 'tier'), RSOCMED (kolom 'original_id' & 'label'), maupun RFOLLOWER (kolom 'social_media').")
         st.stop()
 
     targets = {
