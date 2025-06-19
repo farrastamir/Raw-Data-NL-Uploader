@@ -264,24 +264,33 @@ try:
         st.success("✅ File JSON berhasil diproses.")
 
     # --- Klasifikasikan DataFrame ---
-    ronm_dfs, rsocmed_dfs, unknown_dfs = [], [], []
+    # <--- MODIFIKASI: Menambahkan rfollower_dfs
+    ronm_dfs, rsocmed_dfs, rfollower_dfs, unknown_dfs = [], [], [], []
     for df in dfs:
-        if "tier" in df.columns:
+        cols = {str(c).lower() for c in df.columns} # Konversi nama kolom ke lowercase untuk pengecekan
+        if "tier" in cols:
             ronm_dfs.append(df)
-        elif {"original_id", "label"}.issubset(df.columns):
+        elif {"original_id", "label"}.issubset(cols):
+            # Logika untuk rsocmed tidak berubah
             start = df.columns.get_loc("original_id")
             end = df.columns.get_loc("label")
             rsocmed_dfs.append(df.iloc[:, start : end + 1])
+        # <--- BARU: Logika untuk mendeteksi DataFrame RFOLLOWER
+        elif any('tanggal' in col for col in cols):
+             rfollower_dfs.append(df)
         else:
             unknown_dfs.append(df)
 
-    if not ronm_dfs and not rsocmed_dfs:
-        st.error("❌ Tidak ada data yang cocok dengan skema RONM maupun RSOCMED.")
+    # <--- MODIFIKASI: Memeriksa apakah ada data yang akan diunggah
+    if not ronm_dfs and not rsocmed_dfs and not rfollower_dfs:
+        st.error("❌ Tidak ada data yang cocok dengan skema RONM, RSOCMED, maupun RFOLLOWER (berdasarkan kolom 'tanggal').")
         st.stop()
 
+    # <--- MODIFIKASI: Menambahkan RFOLLOWER ke dictionary targets
     targets = {
         "RONM": pd.concat(ronm_dfs, ignore_index=True) if ronm_dfs else None,
         "RSOCMED": pd.concat(rsocmed_dfs, ignore_index=True) if rsocmed_dfs else None,
+        "RFOLLOWER": pd.concat(rfollower_dfs, ignore_index=True) if rfollower_dfs else None,
     }
 
     # --- Proses Upload ---
@@ -308,7 +317,14 @@ try:
 
         replace = upload_mode.startswith("Ganti")
         if replace:
-            clear_range = 'A:AG' if ws_name == "RONM" else 'A:AZ'
+            # <--- MODIFIKASI: Menambahkan logika clear range untuk RFOLLOWER
+            if ws_name == "RONM":
+                clear_range = 'A:AG'
+            elif ws_name == "RSOCMED":
+                clear_range = 'A:AZ'
+            else: # Default untuk RFOLLOWER dan tipe lainnya
+                clear_range = 'A:ZZ' # Range aman yang lebar
+
             st.info(f"Membersihkan kolom {clear_range} di sheet '{ws_name}'...")
             ws.batch_clear([clear_range])
             next_row = 1
@@ -335,14 +351,13 @@ except Exception:
     st.text(traceback.format_exc())
 
 finally:
-    # --- BARU: Blok ini akan selalu dijalankan, baik sukses maupun gagal ---
+    # Blok ini akan selalu dijalankan, baik sukses maupun gagal
     st.divider()
     st.markdown(
         f"### [📄 Buka Spreadsheet](https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/edit)"
     )
     
-    # --- BARU: Tombol untuk mereset state aplikasi ---
+    # Tombol untuk mereset state aplikasi
     if st.button("Mulai Lagi (Reset)", use_container_width=True):
-        # Membersihkan semua state widget (file uploader, text input, etc.)
         st.session_state.clear()
         st.rerun()
