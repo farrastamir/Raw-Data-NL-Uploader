@@ -84,9 +84,14 @@ def standardize_dates(df: pd.DataFrame) -> pd.DataFrame:
 
 def read_csv_from_bytes(b: bytes) -> pd.DataFrame:
     """Baca CSV dari bytes dengan delimiter otomatis."""
-    sample = b[:2048].decode("utf-8", errors="ignore")
-    delim = detect_delimiter(sample)
-    return pd.read_csv(io.BytesIO(b), delimiter=delim)
+    # <--- MODIFIKASI: Menambahkan penanganan delimiter untuk file spesifik Anda
+    try:
+        sample = b[:2048].decode("utf-8", errors="ignore")
+        delim = detect_delimiter(sample)
+        return pd.read_csv(io.BytesIO(b), delimiter=delim)
+    except Exception:
+        # Fallback jika deteksi otomatis gagal, coba dengan semicolon
+        return pd.read_csv(io.BytesIO(b), delimiter=';')
 
 
 def load_from_url(url: str) -> List[pd.DataFrame]:
@@ -264,29 +269,32 @@ try:
         st.success("✅ File JSON berhasil diproses.")
 
     # --- Klasifikasikan DataFrame ---
-    # <--- MODIFIKASI: Menambahkan rfollower_dfs
     ronm_dfs, rsocmed_dfs, rfollower_dfs, unknown_dfs = [], [], [], []
+    
+    # <--- PERBAIKAN UTAMA: Daftar kata kunci untuk deteksi tanggal/waktu
+    date_keywords = ['date', 'tanggal', 'waktu', 'time']
+
     for df in dfs:
-        cols = {str(c).lower() for c in df.columns} # Konversi nama kolom ke lowercase untuk pengecekan
+        cols = {str(c).lower() for c in df.columns}
         if "tier" in cols:
             ronm_dfs.append(df)
         elif {"original_id", "label"}.issubset(cols):
-            # Logika untuk rsocmed tidak berubah
-            start = df.columns.get_loc("original_id")
-            end = df.columns.get_loc("label")
-            rsocmed_dfs.append(df.iloc[:, start : end + 1])
-        # <--- BARU: Logika untuk mendeteksi DataFrame RFOLLOWER
-        elif any('tanggal' in col for col in cols):
-             rfollower_dfs.append(df)
+            start_col = next((c for c in df.columns if str(c).lower() == 'original_id'), None)
+            end_col = next((c for c in df.columns if str(c).lower() == 'label'), None)
+            if start_col and end_col:
+                start_idx = df.columns.get_loc(start_col)
+                end_idx = df.columns.get_loc(end_col)
+                rsocmed_dfs.append(df.iloc[:, start_idx : end_idx + 1])
+        # <--- PERBAIKAN UTAMA: Menggunakan daftar kata kunci untuk klasifikasi
+        elif any(any(keyword in col for keyword in date_keywords) for col in cols):
+            rfollower_dfs.append(df)
         else:
             unknown_dfs.append(df)
 
-    # <--- MODIFIKASI: Memeriksa apakah ada data yang akan diunggah
     if not ronm_dfs and not rsocmed_dfs and not rfollower_dfs:
-        st.error("❌ Tidak ada data yang cocok dengan skema RONM, RSOCMED, maupun RFOLLOWER (berdasarkan kolom 'tanggal').")
+        st.error("❌ Tidak ada data yang cocok dengan skema RONM, RSOCMED, maupun RFOLLOWER (berdasarkan kolom tanggal/waktu).")
         st.stop()
 
-    # <--- MODIFIKASI: Menambahkan RFOLLOWER ke dictionary targets
     targets = {
         "RONM": pd.concat(ronm_dfs, ignore_index=True) if ronm_dfs else None,
         "RSOCMED": pd.concat(rsocmed_dfs, ignore_index=True) if rsocmed_dfs else None,
@@ -317,13 +325,12 @@ try:
 
         replace = upload_mode.startswith("Ganti")
         if replace:
-            # <--- MODIFIKASI: Menambahkan logika clear range untuk RFOLLOWER
             if ws_name == "RONM":
                 clear_range = 'A:AG'
             elif ws_name == "RSOCMED":
                 clear_range = 'A:AZ'
-            else: # Default untuk RFOLLOWER dan tipe lainnya
-                clear_range = 'A:ZZ' # Range aman yang lebar
+            else: 
+                clear_range = 'A:ZZ'
 
             st.info(f"Membersihkan kolom {clear_range} di sheet '{ws_name}'...")
             ws.batch_clear([clear_range])
@@ -345,6 +352,10 @@ try:
 
     if any_upload_success:
         st.balloons()
+        
+    if unknown_dfs:
+        st.warning(f"⚠️ Ditemukan {len(unknown_dfs)} file yang tidak cocok dengan skema manapun dan tidak diunggah.")
+
 
 except Exception:
     st.error("❌ Terjadi kesalahan saat mengakses / menulis Spreadsheet.")
@@ -353,9 +364,11 @@ except Exception:
 finally:
     # Blok ini akan selalu dijalankan, baik sukses maupun gagal
     st.divider()
-    st.markdown(
-        f"### [📄 Buka Spreadsheet](https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/edit)"
-    )
+    # Hanya tampilkan link jika SPREADSHEET_ID berhasil diekstrak
+    if 'SPREADSHEET_ID' in locals():
+        st.markdown(
+            f"### [📄 Buka Spreadsheet](https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/edit)"
+        )
     
     # Tombol untuk mereset state aplikasi
     if st.button("Mulai Lagi (Reset)", use_container_width=True):
