@@ -13,11 +13,9 @@ def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     """Hilangkan apostrof ('123) yang kadang muncul dari Excel/Sheets."""
     return df.applymap(lambda x: str(x).lstrip("'") if isinstance(x, str) else x)
 
-
 def detect_delimiter(sample_text: str) -> str:
     """Deteksi delimiter dominan (',' atau ';')."""
     return ";" if sample_text.count(";") > sample_text.count(",") else ","
-
 
 def truncate_long_texts(df: pd.DataFrame,
                         max_allowed: int = 50_000,
@@ -30,7 +28,6 @@ def truncate_long_texts(df: pd.DataFrame,
         return x[:trunc_length] if isinstance(x, str) and len(x) > max_allowed else x
     return df.applymap(_trunc)
 
-
 def _fix_time_dots(t: str) -> str:
     """14.26.28 → 14:26:28, 13.00 → 13:00."""
     return re.sub(
@@ -40,13 +37,11 @@ def _fix_time_dots(t: str) -> str:
         t,
     )
 
-
 def _to_full_year(year: int) -> int:
     """2-digit year → 4-digit (≤30 → 20xx, sisanya 19xx)."""
     if year < 100:
         return 2000 + year if year <= 30 else 1900 + year
     return year
-
 
 def standardize_dates(df: pd.DataFrame) -> pd.DataFrame:
     """Ubah kolom date_created / date_published → 'dd/mm/yyyy hh.mm.ss'."""
@@ -80,7 +75,6 @@ def standardize_dates(df: pd.DataFrame) -> pd.DataFrame:
         df[col] = df[col].apply(_convert)
     return df
 
-
 def read_csv_from_bytes(b: bytes) -> pd.DataFrame:
     """Baca CSV dari bytes dengan delimiter otomatis."""
     try:
@@ -89,7 +83,6 @@ def read_csv_from_bytes(b: bytes) -> pd.DataFrame:
         return pd.read_csv(io.BytesIO(b), delimiter=delim)
     except Exception:
         return pd.read_csv(io.BytesIO(b), delimiter=';')
-
 
 def load_from_url(url: str) -> List[pd.DataFrame]:
     """Unduh file CSV/ZIP via URL → list DataFrame."""
@@ -124,10 +117,10 @@ def write_dataframe_in_chunks(ws,
     rows_per_batch = 10_000
     row_ptr = 0
     total_rows = len(df)
-    header_written = False
+    header_written = not replace_mode # Jika append, anggap header sudah ada
 
     while row_ptr < total_rows:
-        chunk = df.iloc[row_ptr: row_ptr + rows_per_batch]
+        chunk = df.iloc[row_ptr : row_ptr + rows_per_batch]
         start_display = row_ptr + 1
         end_display = min(row_ptr + len(chunk), total_rows)
         progress_placeholder.info(
@@ -135,14 +128,15 @@ def write_dataframe_in_chunks(ws,
         )
 
         try:
+            # ### PERBAIKAN: set_with_dataframe tidak butuh 'replace_mode', tapi 'include_column_header'
+            # Logika header disederhanakan di sini.
             set_with_dataframe(
                 ws,
                 chunk,
-                include_column_header=(not header_written and replace_mode),
+                include_column_header=(row_ptr == 0 and replace_mode), # Hanya tulis header di chunk pertama & mode replace
                 row=start_row + row_ptr,
                 resize=False,
             )
-            header_written = True
             row_ptr += len(chunk)
         except gspread.exceptions.APIError as e:
             if "500" in str(e) and rows_per_batch > 1:
@@ -170,222 +164,258 @@ with col2:
         st.session_state.clear()
         st.rerun()
 
+# ### PERBAIKAN: Inisialisasi session_state di awal
+# Ini untuk menyimpan data antar-interaksi
+if 'dfs' not in st.session_state:
+    st.session_state.dfs = []
+if 'step' not in st.session_state:
+    st.session_state.step = 1
+
 
 # ----------  1️⃣  PILIH SUMBER DATA  ----------
-st.header("1️⃣ Pilih sumber data")
+# Tampilkan bagian ini hanya jika data belum diunggah (step 1)
+if st.session_state.step == 1:
+    st.header("1️⃣ Pilih sumber data")
 
-# REVISI 1: Opsi disederhanakan menjadi 2 pilihan.
-src_choice = st.selectbox(
-    "Bagaimana Anda ingin memasukkan data?",
-    ("Unggah File (CSV/ZIP)", "Masukkan Tautan"),
-    key="src_choice_key"
-)
-
-dfs: List[pd.DataFrame] = []
-
-# REVISI 1: Logika untuk handle upload file digabung.
-if src_choice == "Unggah File (CSV/ZIP)":
-    uploaded_files = st.file_uploader(
-        "Unggah satu / lebih file .CSV atau .ZIP",
-        type=["csv", "zip"],
-        accept_multiple_files=True,
-        key="file_uploader"
+    src_choice = st.selectbox(
+        "Bagaimana Anda ingin memasukkan data?",
+        ("Unggah File (CSV/ZIP)", "Masukkan Tautan"),
+        key="src_choice_key"
     )
-    if uploaded_files:
-        with st.spinner("Membaca dan memproses file..."):
-            for f in uploaded_files:
-                # Deteksi otomatis tipe file berdasarkan nama
-                if f.name.lower().endswith('.zip'):
-                    with zipfile.ZipFile(f, "r") as z:
-                        for name in z.namelist():
-                            if name.lower().endswith(".csv") and not name.startswith('__MACOSX'):
-                                dfs.append(clean_dataframe(read_csv_from_bytes(z.read(name))))
-                elif f.name.lower().endswith('.csv'):
-                    dfs.append(clean_dataframe(read_csv_from_bytes(f.read())))
-                else:
-                    st.warning(f"File '{f.name}' diabaikan karena bukan format .zip atau .csv yang didukung.")
 
-else: # src_choice == "Masukkan Tautan"
-    url_text = st.text_area("Tempel satu / lebih tautan (pisahkan dengan baris baru atau koma)", key="url_input")
-    if url_text:
-        with st.spinner("Mengunduh dan memproses data dari tautan..."):
-            url_list = [u.strip() for u in re.split(r"[\n,]+", url_text) if u.strip()]
-            for u in url_list:
-                dfs.extend(load_from_url(u))
+    temp_dfs: List[pd.DataFrame] = []
 
-if not dfs:
-    st.info("⌛ Unggah file atau masukkan tautan untuk melanjutkan.")
-    st.stop()
+    if src_choice == "Unggah File (CSV/ZIP)":
+        uploaded_files = st.file_uploader(
+            "Unggah satu / lebih file .CSV atau .ZIP",
+            type=["csv", "zip"],
+            accept_multiple_files=True,
+            key="file_uploader"
+        )
+        if uploaded_files:
+            with st.spinner("Membaca dan memproses file..."):
+                for f in uploaded_files:
+                    if f.name.lower().endswith('.zip'):
+                        with zipfile.ZipFile(f, "r") as z:
+                            for name in z.namelist():
+                                if name.lower().endswith(".csv") and not name.startswith('__MACOSX'):
+                                    temp_dfs.append(clean_dataframe(read_csv_from_bytes(z.read(name))))
+                    elif f.name.lower().endswith('.csv'):
+                        temp_dfs.append(clean_dataframe(read_csv_from_bytes(f.read())))
+                    else:
+                        st.warning(f"File '{f.name}' diabaikan karena bukan format .zip atau .csv yang didukung.")
 
-st.success(f"✅ Berhasil mengumpulkan {len(dfs)} file data.")
+    else: # src_choice == "Masukkan Tautan"
+        url_text = st.text_area("Tempel satu / lebih tautan (pisahkan dengan baris baru atau koma)", key="url_input")
+        if url_text:
+            with st.spinner("Mengunduh dan memproses data dari tautan..."):
+                url_list = [u.strip() for u in re.split(r"[\n,]+", url_text) if u.strip()]
+                for u in url_list:
+                    temp_dfs.extend(load_from_url(u))
 
-# ----------  2️⃣  PENGATURAN SPREADSHEET  ----------
-st.header("2️⃣ Pengaturan Spreadsheet")
-
-# REVISI 2: Menambahkan form untuk konfirmasi
-with st.form("sheet_settings_form"):
-    sheet_link = st.text_input("Tempel link Google Spreadsheet tujuan:", key="sheet_link_input")
-    upload_mode = st.radio(
-        "Mode upload:",
-        ("Ganti isi lama (Replace)", "Tambahkan di bawah (Append)"),
-        key="upload_mode_key",
-        horizontal=True
-    )
-    
-    # Tombol konfirmasi di dalam form
-    confirmed = st.form_submit_button("✅ Konfirmasi & Lanjutkan")
-
-if not confirmed or not sheet_link:
-    st.info("Masukkan link spreadsheet dan klik 'Konfirmasi' untuk melanjutkan.")
-    st.stop()
-
-
-# ----------  3️⃣  AUTENTIKASI GOOGLE SHEETS  ----------
-st.header("3️⃣ Autentikasi Google Sheets")
-
-with st.form("json_auth_form"):
-    json_opt = st.radio(
-        "Pilih sumber Service-Account JSON:",
-        ("Gunakan JSON default di Drive", "Unggah file JSON sendiri"),
-        key="json_opt_key"
-    )
-    uploaded_json = None
-    if json_opt == "Unggah file JSON sendiri":
-        uploaded_json = st.file_uploader("Unggah file .json", type="json", key="json_uploader")
-    
-    proceed = st.form_submit_button("🚀 Mulai Proses Upload!")
-
-if not proceed:
-    st.stop()
-
-# ----------  Proses Utama (Ekstraksi ID dan Upload) ----------
-m = re.search(r"/d/([\w-]+)", sheet_link)
-if not m:
-    st.error("Link Spreadsheet tidak valid. Pastikan link yang Anda masukkan benar.")
-    st.stop()
-
-SPREADSHEET_ID = m.group(1)
-
-try:
-    st.info("Mempersiapkan kredensial...")
-    if json_opt == "Gunakan JSON default di Drive":
-        default_link = "https://drive.google.com/file/d/1VRpKOpI3R918d5voY70wi9CsDRBwDuRl/view?usp=drive_link"
-        fid = re.search(r"/d/([\w-]+)", default_link).group(1)
-        r = requests.get(f"https://drive.google.com/uc?export=download&id={fid}", timeout=30)
-        r.raise_for_status()
-        json_data = json.loads(r.content.decode())
-        st.success("✅ JSON default berhasil diambil.")
+    # ### PERBAIKAN: Simpan data ke session_state dan maju ke step berikutnya
+    if temp_dfs:
+        st.session_state.dfs = temp_dfs
+        st.session_state.step = 2
+        st.rerun() # Jalankan ulang skrip untuk pindah ke step 2
     else:
-        if uploaded_json is None:
-            st.error("Silakan unggah file JSON terlebih dahulu.")
-            st.stop()
-        json_data = json.loads(uploaded_json.read().decode())
-        st.success("✅ File JSON berhasil diproses.")
-
-    with st.spinner("Mengklasifikasikan data..."):
-        ronm_dfs, rsocmed_dfs, rfollower_dfs, unknown_dfs = [], [], [], []
-        
-        for df in dfs:
-            cols = {str(c).lower() for c in df.columns}
-            if "tier" in cols:
-                ronm_dfs.append(df)
-            elif {"original_id", "label"}.issubset(cols):
-                start_col = next((c for c in df.columns if str(c).lower() == 'original_id'), None)
-                end_col = next((c for c in df.columns if str(c).lower() == 'label'), None)
-                if start_col and end_col:
-                    start_idx = df.columns.get_loc(start_col)
-                    end_idx = df.columns.get_loc(end_col)
-                    rsocmed_dfs.append(df.iloc[:, start_idx : end_idx + 1])
-            elif "social_media" in cols:
-                rfollower_dfs.append(df)
-            else:
-                unknown_dfs.append(df)
-
-    if not ronm_dfs and not rsocmed_dfs and not rfollower_dfs:
-        st.error("❌ Tidak ada data yang cocok dengan skema RONM (kolom 'tier'), RSOCMED (kolom 'original_id' & 'label'), maupun RFOLLOWER (kolom 'social_media'). Proses dihentikan.")
+        st.info("⌛ Unggah file atau masukkan tautan untuk melanjutkan.")
         st.stop()
 
-    targets = {
-        "RONM": pd.concat(ronm_dfs, ignore_index=True) if ronm_dfs else None,
-        "RSOCMED": pd.concat(rsocmed_dfs, ignore_index=True) if rsocmed_dfs else None,
-        "RFOLLOWER": pd.concat(rfollower_dfs, ignore_index=True) if rfollower_dfs else None,
-    }
 
-    creds = service_account.Credentials.from_service_account_info(
-        json_data, scopes=["https://www.googleapis.com/auth/spreadsheets"]
-    )
-    gc = gspread.authorize(creds)
-    sh = gc.open_by_key(SPREADSHEET_ID)
+# ----------  2️⃣  PENGATURAN SPREADSHEET  ----------
+# Tampilkan bagian ini hanya jika data sudah ada (step 2)
+if st.session_state.step == 2:
+    st.success(f"✅ Berhasil mengumpulkan {len(st.session_state.dfs)} file data.")
+    st.header("2️⃣ Pengaturan Spreadsheet")
 
-    st.write("---")
-    st.info("🚀 Memulai proses unggah...")
-    any_upload_success = False
-    
-    for ws_name, df in targets.items():
-        if df is None or df.empty:
-            continue
-        
-        st.subheader(f"Mengunggah ke sheet: `{ws_name}`")
-        df = truncate_long_texts(standardize_dates(df))
-
-        try:
-            ws = sh.worksheet(ws_name)
-        except gspread.exceptions.WorksheetNotFound:
-            st.info(f"Worksheet '{ws_name}' tidak ditemukan, membuat baru...")
-            ws = sh.add_worksheet(title=ws_name, rows="1000", cols="50")
-
-        replace = upload_mode.startswith("Ganti")
-
-        if ws_name == "RFOLLOWER":
-            st.info(f"Mode RFOLLOWER: Menulis ulang data dari file (termasuk header) mulai dari baris 2.")
-            ws.batch_clear(['A2:ZZ']) 
-            next_row = 2
-            effective_replace_mode = True
-        else:
-            effective_replace_mode = replace
-            if effective_replace_mode:
-                if ws_name == "RONM": clear_range = 'A:AG'
-                elif ws_name == "RSOCMED": clear_range = 'A:AZ'
-                else: clear_range = 'A:ZZ'
-                
-                st.info(f"Membersihkan kolom {clear_range} di sheet '{ws_name}'...")
-                ws.batch_clear([clear_range])
-                next_row = 1
-            else:
-                existing_values = ws.get_all_values()
-                next_row = len(existing_values) + 1 if existing_values else 1
-                effective_replace_mode = False
-        
-        progress_placeholder = st.empty()
-        write_dataframe_in_chunks(
-            ws, df, 
-            start_row=next_row, 
-            replace_mode=effective_replace_mode,
-            progress_placeholder=progress_placeholder
+    with st.form("sheet_settings_form"):
+        sheet_link = st.text_input("Tempel link Google Spreadsheet tujuan:", key="sheet_link_input")
+        upload_mode = st.radio(
+            "Mode upload:",
+            ("Ganti isi lama (Replace)", "Tambahkan di bawah (Append)"),
+            key="upload_mode_key",
+            horizontal=True
         )
-        st.success(f"✅ Selesai! {len(df)} baris berhasil diunggah ke worksheet **{ws_name}**")
-        any_upload_success = True
-
-    st.write("---")
-    if any_upload_success:
-        st.balloons()
-        st.success("🎉 Semua proses unggah telah selesai!")
         
-    if unknown_dfs:
-        st.warning(f"⚠️ Ditemukan {len(unknown_dfs)} file yang tidak cocok dengan skema manapun dan tidak diunggah.")
+        confirmed = st.form_submit_button("✅ Konfirmasi & Lanjutkan")
 
-except Exception:
-    st.error("❌ Terjadi kesalahan fatal saat mengakses atau menulis ke Spreadsheet.")
-    st.text(traceback.format_exc())
+        # ### PERBAIKAN: Saat form dikonfirmasi, simpan info dan maju ke step 3
+        if confirmed and sheet_link:
+            st.session_state.sheet_link = sheet_link
+            st.session_state.upload_mode = upload_mode
+            st.session_state.step = 3
+            st.rerun()
+        elif confirmed and not sheet_link:
+            st.warning("Harap masukkan link Google Spreadsheet.")
 
-finally:
+    if not st.session_state.get('sheet_link'):
+        st.info("Masukkan link spreadsheet dan klik 'Konfirmasi' untuk melanjutkan.")
+        st.stop()
+
+
+# ----------  3️⃣  AUTENTIKASI GOOGLE SHEETS & PROSES UTAMA ----------
+# Tampilkan bagian ini hanya jika step 1 dan 2 selesai (step 3)
+if st.session_state.step == 3:
+    st.success(f"✅ Berhasil mengumpulkan {len(st.session_state.dfs)} file data.")
+    st.success(f"✅ Link Spreadsheet tujuan: {st.session_state.sheet_link}")
+    st.success(f"✅ Mode Unggah: {st.session_state.upload_mode}")
+    st.header("3️⃣ Autentikasi & Mulai Proses")
+
+    with st.form("json_auth_form"):
+        json_opt = st.radio(
+            "Pilih sumber Service-Account JSON:",
+            ("Gunakan JSON default di Drive", "Unggah file JSON sendiri"),
+            key="json_opt_key"
+        )
+        uploaded_json = None
+        if json_opt == "Unggah file JSON sendiri":
+            uploaded_json = st.file_uploader("Unggah file .json", type="json", key="json_uploader")
+        
+        proceed = st.form_submit_button("🚀 Mulai Proses Upload!")
+
+    if not proceed:
+        st.info("Pilih metode autentikasi dan klik 'Mulai Proses Upload!'")
+        st.stop()
+
+    # ### PERBAIKAN: Ambil data dari session_state, bukan variabel lokal
+    sheet_link = st.session_state.sheet_link
+    upload_mode = st.session_state.upload_mode
+    dfs = st.session_state.dfs
+
+    m = re.search(r"/d/([\w-]+)", sheet_link)
+    if not m:
+        st.error("Link Spreadsheet tidak valid. Pastikan link yang Anda masukkan benar.")
+        st.stop()
+
+    SPREADSHEET_ID = m.group(1)
+
+    try:
+        st.info("Mempersiapkan kredensial...")
+        if json_opt == "Gunakan JSON default di Drive":
+            default_link = "https://drive.google.com/file/d/1VRpKOpI3R918d5voY70wi9CsDRBwDuRl/view?usp=drive_link"
+            fid = re.search(r"/d/([\w-]+)", default_link).group(1)
+            r = requests.get(f"https://drive.google.com/uc?export=download&id={fid}", timeout=30)
+            r.raise_for_status()
+            json_data = json.loads(r.content.decode())
+            st.success("✅ JSON default berhasil diambil.")
+        else:
+            if uploaded_json is None:
+                st.error("Silakan unggah file JSON terlebih dahulu.")
+                st.stop()
+            json_data = json.loads(uploaded_json.read().decode())
+            st.success("✅ File JSON berhasil diproses.")
+
+        with st.spinner("Mengklasifikasikan data..."):
+            ronm_dfs, rsocmed_dfs, rfollower_dfs, unknown_dfs = [], [], [], []
+            
+            for df in dfs:
+                cols = {str(c).lower() for c in df.columns}
+                if "tier" in cols:
+                    ronm_dfs.append(df)
+                elif {"original_id", "label"}.issubset(cols):
+                    start_col = next((c for c in df.columns if str(c).lower() == 'original_id'), None)
+                    end_col = next((c for c in df.columns if str(c).lower() == 'label'), None)
+                    if start_col and end_col:
+                        start_idx = df.columns.get_loc(start_col)
+                        end_idx = df.columns.get_loc(end_col)
+                        rsocmed_dfs.append(df.iloc[:, start_idx : end_idx + 1])
+                elif "social_media" in cols:
+                    rfollower_dfs.append(df)
+                else:
+                    unknown_dfs.append(df)
+
+        if not ronm_dfs and not rsocmed_dfs and not rfollower_dfs:
+            st.error("❌ Tidak ada data yang cocok dengan skema RONM (kolom 'tier'), RSOCMED (kolom 'original_id' & 'label'), maupun RFOLLOWER (kolom 'social_media'). Proses dihentikan.")
+            st.stop()
+
+        targets = {
+            "RONM": pd.concat(ronm_dfs, ignore_index=True) if ronm_dfs else None,
+            "RSOCMED": pd.concat(rsocmed_dfs, ignore_index=True) if rsocmed_dfs else None,
+            "RFOLLOWER": pd.concat(rfollower_dfs, ignore_index=True) if rfollower_dfs else None,
+        }
+
+        creds = service_account.Credentials.from_service_account_info(
+            json_data, scopes=["https://www.googleapis.com/auth/spreadsheets"]
+        )
+        gc = gspread.authorize(creds)
+        sh = gc.open_by_key(SPREADSHEET_ID)
+
+        st.write("---")
+        st.info("🚀 Memulai proses unggah...")
+        any_upload_success = False
+        
+        for ws_name, df in targets.items():
+            if df is None or df.empty:
+                continue
+            
+            st.subheader(f"Mengunggah ke sheet: `{ws_name}`")
+            df = truncate_long_texts(standardize_dates(df))
+
+            try:
+                ws = sh.worksheet(ws_name)
+            except gspread.exceptions.WorksheetNotFound:
+                st.info(f"Worksheet '{ws_name}' tidak ditemukan, membuat baru...")
+                ws = sh.add_worksheet(title=ws_name, rows="1000", cols="50")
+
+            replace = upload_mode.startswith("Ganti")
+            effective_replace_mode = replace # Inisialisasi awal
+            
+            if ws_name == "RFOLLOWER":
+                st.info(f"Mode RFOLLOWER: Menulis ulang data dari file (termasuk header) mulai dari baris 2.")
+                ws.batch_clear(['A2:ZZ']) 
+                next_row = 2
+                effective_replace_mode = True # Selalu replace untuk RFOLLOWER
+            else:
+                if replace:
+                    if ws_name == "RONM": clear_range = 'A:AG'
+                    elif ws_name == "RSOCMED": clear_range = 'A:AZ'
+                    else: clear_range = 'A:ZZ'
+                    
+                    st.info(f"Membersihkan kolom {clear_range} di sheet '{ws_name}'...")
+                    ws.batch_clear([clear_range])
+                    next_row = 1
+                else: # Mode Append
+                    existing_values = ws.get_all_values()
+                    next_row = len(existing_values) + 1 if existing_values else 1
+                    effective_replace_mode = False # Pastikan ini False untuk append
+
+            progress_placeholder = st.empty()
+            write_dataframe_in_chunks(
+                ws, df, 
+                start_row=next_row, 
+                replace_mode=effective_replace_mode,
+                progress_placeholder=progress_placeholder
+            )
+            st.success(f"✅ Selesai! {len(df)} baris berhasil diunggah ke worksheet **{ws_name}**")
+            any_upload_success = True
+
+        st.write("---")
+        if any_upload_success:
+            st.balloons()
+            st.success("🎉 Semua proses unggah telah selesai!")
+            
+        if unknown_dfs:
+            st.warning(f"⚠️ Ditemukan {len(unknown_dfs)} file yang tidak cocok dengan skema manapun dan tidak diunggah.")
+
+        # ### PERBAIKAN: Tandai proses selesai agar bisa di-reset
+        st.session_state.step = 4
+
+    except Exception:
+        st.error("❌ Terjadi kesalahan fatal saat mengakses atau menulis ke Spreadsheet.")
+        st.text(traceback.format_exc())
+        st.session_state.step = 4 # Tandai selesai meskipun error
+
+# Tampilkan bagian akhir ini jika proses sudah selesai atau error
+if st.session_state.step == 4:
     st.divider()
+    # Gunakan SPREADSHEET_ID yang mungkin sudah diekstrak
     if 'SPREADSHEET_ID' in locals():
         st.markdown(
             f"### [📄 Buka Spreadsheet](https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/edit)"
         )
     
-    # REVISI 3: Tombol reset di bagian bawah untuk kemudahan setelah proses selesai.
+    # Tombol reset di bagian bawah untuk kemudahan setelah proses selesai.
     if st.button("Mulai Lagi (Reset)", use_container_width=True, key="reset_bottom"):
         st.session_state.clear()
         st.rerun()
