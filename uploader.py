@@ -42,7 +42,6 @@ def truncate_long_texts(df: pd.DataFrame, max_allowed: int = 50_000, trunc_lengt
         return x[:trunc_length] if isinstance(x, str) and len(x) > max_allowed else x
     return df.applymap(_trunc)
 def standardize_dates(df: pd.DataFrame) -> pd.DataFrame:
-    # Cek semua kemungkinan nama kolom tanggal
     date_cols_to_check = [col for col in ["Date", "date_created", "date_published"] if col in df.columns]
     for col in date_cols_to_check:
         def _convert(val):
@@ -66,8 +65,9 @@ def standardize_dates(df: pd.DataFrame) -> pd.DataFrame:
 def read_csv_from_bytes(b: bytes) -> pd.DataFrame:
     try:
         sample = b[:2048].decode("utf-8", errors="ignore"); delim = detect_delimiter(sample)
-        return pd.read_csv(io.BytesIO(b), delimiter=delim)
-    except Exception: return pd.read_csv(io.BytesIO(b), delimiter=';')
+        return pd.read_csv(io.BytesIO(b), delimiter=delim, encoding_errors='ignore')
+    except Exception:
+        return pd.read_csv(io.BytesIO(b), delimiter=';', encoding_errors='ignore')
 def load_from_url(url: str) -> List[pd.DataFrame]:
     dfs: List[pd.DataFrame] = []
     try:
@@ -90,9 +90,7 @@ def write_dataframe_in_chunks(ws, df: pd.DataFrame, start_row: int, replace_mode
             row_ptr += len(chunk)
         except gspread.exceptions.APIError as e:
             if "500" in str(e) and rows_per_batch > 1:
-                rows_per_batch = max(1, rows_per_batch // 2)
-                st.warning(f"⚠️ 500 error – mengecilkan batch menjadi {rows_per_batch} baris…")
-                time.sleep(2)
+                rows_per_batch = max(1, rows_per_batch // 2); st.warning(f"⚠️ 500 error – mengecilkan batch menjadi {rows_per_batch} baris…"); time.sleep(2)
             else: raise
     progress_placeholder.empty()
 
@@ -103,8 +101,7 @@ def get_api_list(_api_key: str, endpoint: str) -> List[Dict]:
     try:
         response = requests.get(url, headers=headers, timeout=20); response.raise_for_status()
         return response.json().get("result", [])
-    except requests.exceptions.RequestException as e:
-        st.error(f"Gagal mengambil daftar dari {endpoint}: {e}"); return []
+    except requests.exceptions.RequestException as e: st.error(f"Gagal mengambil daftar dari {endpoint}: {e}"); return []
 
 def pull_socmed_data_from_api(api_key: str, start_date: datetime.date, end_date: datetime.date, object_ids: List[str], label_ids: List[str]) -> List[pd.DataFrame]:
     all_data = []; page = 1; progress_bar = st.progress(0, "Memulai penarikan data Social Media..."); status_text = st.empty()
@@ -124,16 +121,11 @@ def pull_socmed_data_from_api(api_key: str, start_date: datetime.date, end_date:
     df['Reach'] = 0; df['Impression'] = 0; df['Labels'] = ''
     df['Keyword'] = df['keyword'].apply(lambda x: x.get('displayName', '') if isinstance(x, dict) else '')
     df.rename(columns={
-        'timestamp': 'Date', 'originalId': 'Original Id', 'fromId': 'From Id',
-        'fromName': 'From Name', 'link': 'Url', 'content': 'Content',
-        'sentiment': 'Sentiment', 'postOwnership': 'Post Ownership',
-        'socialMedia': 'Social Media', 'likeCount': 'Likes', 'commentCount': 'Comments',
-        'shareCount': 'Shares', 'engagement': 'Engagement'
-    }, inplace=True)
+        'timestamp': 'Date', 'originalId': 'Original Id', 'fromId': 'From Id', 'fromName': 'From Name', 'link': 'Url', 'content': 'Content', 'sentiment': 'Sentiment', 'postOwnership': 'Post Ownership',
+        'socialMedia': 'Social Media', 'likeCount': 'Likes', 'commentCount': 'Comments', 'shareCount': 'Shares', 'engagement': 'Engagement'}, inplace=True)
     for col in FINAL_SOCMED_COLUMNS:
         if col not in df.columns: df[col] = ''
-    df = df[FINAL_SOCMED_COLUMNS]
-    return [df]
+    return [df[FINAL_SOCMED_COLUMNS]]
 
 def _pull_single_onm_clipping(api_key: str, start_date: datetime.date, end_date: datetime.date, clipping_id: str, clipping_name: str, status_placeholder) -> pd.DataFrame:
     all_data = []; page = 1
@@ -153,14 +145,11 @@ def _pull_single_onm_clipping(api_key: str, start_date: datetime.date, end_date:
     df['Tier'] = ''; df['Labels'] = clipping_name
     df['Journalist'] = df['writer'].apply(lambda x: ', '.join(x) if isinstance(x, list) else '')
     df.rename(columns={
-        'datePublished': 'Date', 'originalId': 'Original Id', 'sourceName': 'Media',
-        'title': 'Title', 'content': 'Content', 'link': 'Url', 'sentiment': 'Sentiment',
-        'prValue': 'PR Value'
+        'datePublished': 'Date', 'originalId': 'Original Id', 'sourceName': 'Media', 'title': 'Title', 'content': 'Content', 'link': 'Url', 'sentiment': 'Sentiment', 'prValue': 'PR Value'
     }, inplace=True)
     for col in FINAL_ONM_COLUMNS:
         if col not in df.columns: df[col] = ''
-    df = df[FINAL_ONM_COLUMNS]
-    return df
+    return df[FINAL_ONM_COLUMNS]
 
 def pull_onm_data_for_multiple_clippings(api_key: str, start_date: datetime.date, end_date: datetime.date, clipping_info: Dict[str, str]) -> List[pd.DataFrame]:
     all_dfs = []; total_clippings = len(clipping_info)
@@ -192,7 +181,33 @@ if st.session_state.step == 1:
     st.header("1️⃣ Pilih sumber data")
     src_choice = st.radio("Bagaimana Anda ingin memasukkan data?", ("Unggah File (CSV/ZIP)", "Masukkan Tautan", "Tarik Data via API"), key="src_choice_key", horizontal=True)
     temp_dfs: List[pd.DataFrame] = []
-    if src_choice == "Tarik Data via API":
+    
+    # --- UI untuk Unggah File atau Link ---
+    if src_choice in ["Unggah File (CSV/ZIP)", "Masukkan Tautan"]:
+        if src_choice == "Unggah File (CSV/ZIP)":
+            uploaded_files = st.file_uploader("Unggah satu / lebih file .CSV atau .ZIP", type=["csv", "zip"], accept_multiple_files=True, key="file_uploader")
+            if uploaded_files:
+                with st.spinner("Membaca dan memproses file..."):
+                    for f in uploaded_files:
+                        try:
+                            if f.name.lower().endswith('.zip'):
+                                with zipfile.ZipFile(f, "r") as z:
+                                    for name in z.namelist():
+                                        if name.lower().endswith(".csv") and not name.startswith('__MACOSX'):
+                                            temp_dfs.append(clean_dataframe(read_csv_from_bytes(z.read(name))))
+                            elif f.name.lower().endswith('.csv'):
+                                temp_dfs.append(clean_dataframe(read_csv_from_bytes(f.read())))
+                        except Exception as e:
+                            st.error(f"Gagal memproses file '{f.name}': {e}")
+        else:
+            url_text = st.text_area("Tempel satu / lebih tautan (pisahkan dengan baris baru atau koma)", key="url_input")
+            if url_text:
+                with st.spinner("Mengunduh dan memproses data dari tautan..."):
+                    url_list = [u.strip() for u in re.split(r"[\n,]+", url_text) if u.strip()]
+                    for u in url_list: temp_dfs.extend(load_from_url(u))
+    
+    # --- UI untuk Tarik Data via API ---
+    elif src_choice == "Tarik Data via API":
         try: API_PASSWORD_FROM_SECRETS = st.secrets["API_PASSWORD"]
         except (FileNotFoundError, KeyError): st.error("Konfigurasi 'API_PASSWORD' tidak ditemukan di Secrets Management. Hubungi developer."); st.stop()
         password = st.text_input("Masukkan Password API", type="password", key="api_password")
@@ -201,7 +216,7 @@ if st.session_state.step == 1:
             def clear_filter_selections():
                 keys_to_clear = ['selected_object_names', 'selected_label_names', 'selected_clipping_names']
                 for key in keys_to_clear:
-                    if key in st.session_state: st.session_state[key] = []
+                    if key in st.session_state: st.session_state[key] = [] if 'names' in key else None
             all_projects = {**DEFAULT_PROJECTS, **st.session_state.added_projects}
             project_options = list(all_projects.keys()) + [ADD_NEW_PROJECT_OPTION]
             selected_project_name = st.selectbox("Pilih Proyek:", project_options, key="project_selector", on_change=clear_filter_selections)
@@ -214,7 +229,7 @@ if st.session_state.step == 1:
                         st.success(f"Proyek '{new_proj_name}' berhasil ditambahkan. Silakan pilih dari daftar di atas."); time.sleep(2); st.rerun()
             else:
                 api_key = all_projects[selected_project_name]
-                data_type_choice = st.radio("Pilih Jenis Data yang Akan Ditarik:", ("Social Media", "Online Media"), horizontal=True, key="data_type_selector", on_change=clear_filter_selections)
+                data_type_choice = st.radio("Pilih Jenis Data:", ("Social Media", "Online Media"), horizontal=True, key="data_type_selector", on_change=clear_filter_selections)
                 with st.form("api_params_form"):
                     st.subheader(f"Parameter Penarikan Data {data_type_choice}")
                     col_tgl1, col_tgl2 = st.columns(2)
@@ -261,24 +276,9 @@ if st.session_state.step == 1:
                                     st.session_state.dfs = temp_dfs; st.session_state.step = 2; st.rerun()
                                 else: st.warning("Tidak ada data yang berhasil ditarik dari API.")
         elif password: st.error("❌ Password salah. Silakan coba lagi.")
-    else: 
-        if src_choice == "Unggah File (CSV/ZIP)":
-            uploaded_files = st.file_uploader("Unggah satu / lebih file .CSV atau .ZIP", type=["csv", "zip"], accept_multiple_files=True, key="file_uploader")
-            if uploaded_files:
-                with st.spinner("Membaca dan memproses file..."):
-                    for f in uploaded_files:
-                        if f.name.lower().endswith('.zip'):
-                            with zipfile.ZipFile(f, "r") as z:
-                                for name in z.namelist():
-                                    if name.lower().endswith(".csv") and not name.startswith('__MACOSX'): temp_dfs.append(clean_dataframe(read_csv_from_bytes(z.read(name))))
-                        elif f.name.lower().endswith('.csv'): temp_dfs.append(clean_dataframe(read_csv_from_bytes(f.read())))
-        else:
-            url_text = st.text_area("Tempel satu / lebih tautan (pisahkan dengan baris baru atau koma)", key="url_input")
-            if url_text:
-                with st.spinner("Mengunduh dan memproses data dari tautan..."):
-                    url_list = [u.strip() for u in re.split(r"[\n,]+", url_text) if u.strip()]
-                    for u in url_list: temp_dfs.extend(load_from_url(u))
-        if temp_dfs: st.session_state.dfs = temp_dfs; st.session_state.step = 2; st.rerun()
+
+    if temp_dfs:
+        st.session_state.dfs = temp_dfs; st.session_state.step = 2; st.rerun()
 
 if st.session_state.step == 2:
     st.success(f"✅ Berhasil mengumpulkan {len(st.session_state.dfs)} file data.")
@@ -289,9 +289,9 @@ if st.session_state.step == 2:
         confirmed = st.form_submit_button("✅ Konfirmasi & Lanjutkan")
         if confirmed and sheet_link:
             st.session_state.sheet_link = sheet_link; st.session_state.upload_mode = upload_mode; st.session_state.step = 3; st.rerun()
-        elif confirmed and not sheet_link:
-            st.warning("Harap masukkan link Google Spreadsheet.")
+        elif confirmed and not sheet_link: st.warning("Harap masukkan link Google Spreadsheet.")
     if not st.session_state.get('sheet_link'): st.info("Masukkan link spreadsheet dan klik 'Konfirmasi' untuk melanjutkan."); st.stop()
+
 if st.session_state.step == 3:
     st.success(f"✅ Berhasil mengumpulkan {len(st.session_state.dfs)} file data.")
     st.success(f"✅ Link Spreadsheet tujuan: {st.session_state.sheet_link}")
@@ -321,22 +321,19 @@ if st.session_state.step == 3:
         with st.spinner("Mengklasifikasikan data..."):
             ronm_dfs, rsocmed_dfs, rfollower_dfs, unknown_dfs = [], [], [], []
             for df in dfs:
-                # --- PERUBAHAN: Logika Klasifikasi yang Diperbaiki ---
-                cols = {str(c).lower().replace(' ', ''): c for c in df.columns}
-                
-                # Prioritas 1: RFOLLOWER (jika hanya ada 'social_media' dan sedikit kolom lain, seperti dari file CSV sederhana)
-                # Ini menggunakan logika dari kode lama Anda sebagai prioritas.
-                if 'social_media' in cols and 'originalid' not in cols and 'prvalue' not in cols:
-                    rfollower_dfs.append(df)
-                # Prioritas 2: RONM
-                elif 'prvalue' in cols or 'sourcename' in cols or 'media' in cols:
+                # --- PERUBAHAN FINAL: Menggunakan logika klasifikasi dari kode lama Anda ---
+                cols = {str(c).lower().strip() for c in df.columns}
+                if "tier" in cols:
                     ronm_dfs.append(df)
-                # Prioritas 3: RSOCMED
-                elif 'originalid' in cols or 'fromname' in cols or 'fromid' in cols:
-                    rsocmed_dfs.append(df)
-                # Fallback jika masih ada 'social_media'
-                elif 'social_media' in cols:
-                    rfollower_dfs.append(df)
+                elif {"original_id", "label"}.issubset(cols):
+                     rsocmed_dfs.append(df)
+                elif "social_media" in cols:
+                    # Ini akan menangkap file RFOLLOWER sederhana dan juga data API Socmed
+                    # Kita perlu membedakannya lagi
+                    if "original id" in {c.lower() for c in df.columns} or "from name" in {c.lower() for c in df.columns}:
+                         rsocmed_dfs.append(df)
+                    else:
+                         rfollower_dfs.append(df)
                 else:
                     unknown_dfs.append(df)
 
@@ -351,19 +348,16 @@ if st.session_state.step == 3:
             try: ws = sh.worksheet(ws_name)
             except gspread.exceptions.WorksheetNotFound: st.info(f"Worksheet '{ws_name}' tidak ditemukan, membuat baru..."); ws = sh.add_worksheet(title=ws_name, rows="1000", cols="50")
             
-            # --- PERUBAHAN: Logika upload RFOLLOWER yang diperbaiki dan dipisahkan ---
             if ws_name == "RFOLLOWER":
                 st.info(f"Mode RFOLLOWER: Menulis ulang data (termasuk header) mulai dari baris 2.")
                 st.info(f"Membersihkan data lama dari A2:ZZ di sheet '{ws_name}'...")
                 ws.batch_clear(['A2:ZZ']) 
                 progress_placeholder = st.empty()
                 progress_placeholder.info(f"⏳ Mengunggah {len(df)} baris ke {ws_name}...")
-                # Tulis data baru mulai dari baris 2, termasuk header dari DataFrame.
                 set_with_dataframe(ws, df, row=2, include_column_header=True, resize=False)
                 progress_placeholder.empty(); st.success(f"✅ Selesai! {len(df)} baris berhasil diunggah ke worksheet **{ws_name}**"); any_upload_success = True
-                continue # Lanjut ke target berikutnya
+                continue
             
-            # Logika untuk RONM dan RSOCMED
             replace = upload_mode.startswith("Ganti")
             if replace:
                 if ws_name == "RONM": clear_range = 'A:AG'
@@ -371,7 +365,7 @@ if st.session_state.step == 3:
                 else: clear_range = 'A:ZZ'
                 st.info(f"Mode Ganti: Membersihkan kolom {clear_range} di sheet '{ws_name}'..."); ws.batch_clear([clear_range])
                 next_row = 1; effective_replace_mode = True
-            else: # Mode Append
+            else: 
                 existing_values = ws.get_all_values(); next_row = len(existing_values) + 1 if existing_values else 1; effective_replace_mode = False
             
             progress_placeholder = st.empty()
