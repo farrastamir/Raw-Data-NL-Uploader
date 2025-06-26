@@ -14,6 +14,19 @@ DEFAULT_PROJECTS = {
 }
 ADD_NEW_PROJECT_OPTION = "➕ Tambah Proyek Baru..."
 
+# --- PERUBAHAN: Mendefinisikan struktur kolom final sesuai CSV ---
+FINAL_SOCMED_COLUMNS = [
+    'Date', 'Original Id', 'From Id', 'From Name', 'Url', 'Content', 
+    'Sentiment', 'Keyword', 'Post Ownership', 'Social Media', 'Likes', 
+    'Comments', 'Shares', 'Engagement', 'Reach', 'Impression', 'Labels'
+]
+
+FINAL_ONM_COLUMNS = [
+    'Date', 'Original Id', 'Media', 'Title', 'Content', 'Url', 
+    'Sentiment', 'Journalist', 'Tier', 'PR Value', 'Labels'
+]
+
+
 # =====================  Inisialisasi Session State =====================
 if 'dfs' not in st.session_state: st.session_state.dfs = []
 if 'step' not in st.session_state: st.session_state.step = 1
@@ -33,27 +46,26 @@ def truncate_long_texts(df: pd.DataFrame, max_allowed: int = 50_000, trunc_lengt
         return x[:trunc_length] if isinstance(x, str) and len(x) > max_allowed else x
     return df.applymap(_trunc)
 def standardize_dates(df: pd.DataFrame) -> pd.DataFrame:
-    for col in ("date_created", "date_published"):
+    for col in ("Date", "date_created", "date_published"): # Menambahkan "Date" untuk handle semua kasus
         if col not in df.columns: continue
         def _convert(val):
             if pd.isna(val): return val
             try:
-                dt_obj = pd.to_datetime(val)
-                return dt_obj.strftime("%d/%m/%Y %H.%M.%S")
-            except (ValueError, TypeError):
-                s = str(val).strip()
-                date_part, time_part = (s.split(" ", 1) + ["00:00:00"])[:2]
-                time_part = re.sub(r"(\d{1,2})\.(\d{2})(?:\.(\d{2}))?", lambda m: f"{m.group(1)}:{m.group(2)}" + (f":{m.group(3)}" if m.group(3) else ""), time_part)
-                date_part = date_part.replace("-", "/")
-                if time_part.count(":") == 0: time_part += ":00"
-                if time_part.count(":") == 1: time_part += ":00"
-                s_norm = f"{date_part} {time_part}"
-                try:
-                    dt_obj = pd.to_datetime(s_norm, dayfirst=True, errors="coerce")
-                    if pd.notna(dt_obj) and dt_obj.year < 100:
-                        dt_obj = dt_obj.replace(year=(2000 + dt_obj.year if dt_obj.year <= 30 else 1900 + dt_obj.year))
-                    return dt_obj.strftime("%d/%m/%Y %H.%M.%S") if pd.notna(dt_obj) else val
-                except Exception: return val
+                # Menggunakan errors='coerce' untuk mengubah format yang tidak valid menjadi NaT (Not a Time)
+                dt_obj = pd.to_datetime(val, errors='coerce')
+                if pd.isna(dt_obj): # Jika gagal, coba parsing manual
+                     s = str(val).strip()
+                     date_part, time_part = (s.split(" ", 1) + ["00:00:00"])[:2]
+                     time_part = re.sub(r"(\d{1,2})\.(\d{2})(?:\.(\d{2}))?", lambda m: f"{m.group(1)}:{m.group(2)}" + (f":{m.group(3)}" if m.group(3) else ""), time_part)
+                     date_part = date_part.replace("-", "/")
+                     if time_part.count(":") == 0: time_part += ":00"
+                     if time_part.count(":") == 1: time_part += ":00"
+                     s_norm = f"{date_part} {time_part}"
+                     dt_obj = pd.to_datetime(s_norm, dayfirst=True, errors="coerce")
+                # Format final
+                return dt_obj.strftime("%d/%m/%Y %H:%M:%S") if pd.notna(dt_obj) else val
+            except Exception:
+                return val # Kembalikan nilai asli jika semua parsing gagal
         df[col] = df[col].apply(_convert)
     return df
 def read_csv_from_bytes(b: bytes) -> pd.DataFrame:
@@ -100,7 +112,6 @@ def get_api_list(_api_key: str, endpoint: str) -> List[Dict]:
         st.error(f"Gagal mengambil daftar dari {endpoint}: {e}"); return []
 
 def pull_socmed_data_from_api(api_key: str, start_date: datetime.date, end_date: datetime.date, object_ids: List[str], label_ids: List[str]) -> List[pd.DataFrame]:
-    # Fungsi ini spesifik untuk Social Media Stream
     all_data = []; page = 1; progress_bar = st.progress(0, "Memulai penarikan data Social Media..."); status_text = st.empty()
     while True:
         payload = {"timestamp_start": f"{start_date} 00:00:00", "timestamp_end": f"{end_date} 23:59:59", "object_ids": object_ids, "label_ids": label_ids, "page": page, "size": 100, "sort_by": "desc"}
@@ -114,61 +125,143 @@ def pull_socmed_data_from_api(api_key: str, start_date: datetime.date, end_date:
             all_data.extend(page_data); progress_bar.progress(min(1.0, len(all_data) / ((page + 1) * 100)), f"Terkumpul {len(all_data)} data..."); page += 1; time.sleep(0.5)
         except requests.exceptions.RequestException as e: st.error(f"Gagal menghubungi API Socmed: {e}"); break
     if not all_data: return []
+    
+    # --- PERUBAHAN: Memformat DataFrame agar sesuai CSV ---
     df = pd.DataFrame(all_data)
-    df.rename(columns={'timestamp': 'date_created', 'likeCount': 'likes', 'commentCount': 'comments', 'shareCount': 'shares', 'link': 'url'}, inplace=True)
-    if 'label' not in df.columns: df['label'] = ''
+    
+    # Buat kolom baru dengan nilai default
+    df['Reach'] = 0
+    df['Impression'] = 0
+    df['Labels'] = '' # Label tidak dikembalikan per post, jadi dikosongkan
+    
+    # Ambil nilai keyword dengan aman
+    df['Keyword'] = df['keyword'].apply(lambda x: x.get('displayName', '') if isinstance(x, dict) else '')
+
+    # Ganti nama kolom dari API ke nama kolom di CSV
+    df.rename(columns={
+        'timestamp': 'Date',
+        'originalId': 'Original Id',
+        'fromId': 'From Id',
+        'fromName': 'From Name',
+        'link': 'Url',
+        'content': 'Content',
+        'sentiment': 'Sentiment',
+        'postOwnership': 'Post Ownership',
+        'socialMedia': 'Social Media',
+        'likeCount': 'Likes',
+        'commentCount': 'Comments',
+        'shareCount': 'Shares',
+        'engagement': 'Engagement'
+    }, inplace=True)
+    
+    # Pastikan semua kolom yang dibutuhkan ada, jika tidak, buat kolom kosong
+    for col in FINAL_SOCMED_COLUMNS:
+        if col not in df.columns:
+            df[col] = ''
+            
+    # Urutkan kolom sesuai urutan final
+    df = df[FINAL_SOCMED_COLUMNS]
     return [df]
 
-# --- PERUBAHAN: Fungsi baru untuk menarik data Online Media ---
-def pull_onm_data_from_api(api_key: str, start_date: datetime.date, end_date: datetime.date, clipping_id: str) -> List[pd.DataFrame]:
-    all_data = []; page = 1; progress_bar = st.progress(0, "Memulai penarikan data Online Media..."); status_text = st.empty()
+def _pull_single_onm_clipping(api_key: str, start_date: datetime.date, end_date: datetime.date, clipping_id: str, clipping_name: str, status_placeholder) -> pd.DataFrame:
+    all_data = []
+    page = 1
     while True:
         payload = {"timestamp_start": f"{start_date} 00:00:00", "timestamp_end": f"{end_date} 23:59:59", "clipping_id": clipping_id, "limit": 100, "page": page}
         headers = {"X-API-KEY": api_key, "Content-Type": "application/json"}; url = "https://external.backend.dashboard.nolimit.id/v1.0/online-media/article/get-article"
-        status_text.info(f"📄 Menarik data ONM halaman {page}...")
+        status_placeholder.info(f"📄 Menarik halaman {page}...")
         try:
             response = requests.post(url, headers=headers, json=payload, timeout=60)
-            if response.status_code != 200: st.error(f"API Error ONM: {response.status_code} - {response.text}"); break
+            if response.status_code != 200: status_placeholder.warning(f"Gagal menarik halaman {page}. Lanjut..."); break
             data = response.json(); page_data = data.get("result", {}).get("list", [])
-            if not page_data: status_text.success("✅ Semua data ONM berhasil ditarik!"); progress_bar.progress(1.0); break
-            all_data.extend(page_data); progress_bar.progress(min(1.0, len(all_data) / ((page + 1) * 100)), f"Terkumpul {len(all_data)} data..."); page += 1; time.sleep(0.5)
-        except requests.exceptions.RequestException as e: st.error(f"Gagal menghubungi API ONM: {e}"); break
-    if not all_data: return []
-    df = pd.DataFrame(all_data).rename(columns={'link': 'url', 'sourceName': 'media', 'writer': 'journalist', 'datePublished': 'date_published'})
-    return [df]
+            if not page_data: break 
+            all_data.extend(page_data); page += 1; time.sleep(0.5)
+        except requests.exceptions.RequestException: status_placeholder.warning(f"Gagal koneksi saat menarik halaman {page}. Lanjut..."); break
+    
+    if not all_data: return pd.DataFrame()
 
-# =====================  UI  =====================
+    # --- PERUBAHAN: Memformat DataFrame agar sesuai CSV ---
+    df = pd.DataFrame(all_data)
+
+    # Buat kolom baru dengan nilai default
+    df['Tier'] = '' # Tier tidak ada di API
+    df['Labels'] = clipping_name # Isi label dengan nama clipping yang ditarik
+
+    # Gabungkan daftar jurnalis menjadi satu string
+    df['Journalist'] = df['writer'].apply(lambda x: ', '.join(x) if isinstance(x, list) else '')
+
+    # Ganti nama kolom dari API ke nama kolom di CSV
+    df.rename(columns={
+        'datePublished': 'Date',
+        'originalId': 'Original Id',
+        'sourceName': 'Media',
+        'title': 'Title',
+        'content': 'Content',
+        'link': 'Url',
+        'sentiment': 'Sentiment',
+        'prValue': 'PR Value'
+    }, inplace=True)
+    
+    # Pastikan semua kolom yang dibutuhkan ada
+    for col in FINAL_ONM_COLUMNS:
+        if col not in df.columns:
+            df[col] = ''
+    
+    # Urutkan kolom sesuai urutan final
+    df = df[FINAL_ONM_COLUMNS]
+    return df
+
+def pull_onm_data_for_multiple_clippings(api_key: str, start_date: datetime.date, end_date: datetime.date, clipping_info: Dict[str, str]) -> List[pd.DataFrame]:
+    all_dfs = []; total_clippings = len(clipping_info)
+    progress_bar = st.progress(0, "Memulai penarikan data Online Media...")
+    
+    for i, (clipping_name, clipping_id) in enumerate(clipping_info.items()):
+        progress_text = f"Memproses clipping '{clipping_name}' ({i+1} dari {total_clippings})..."
+        status_placeholder = st.empty(); status_placeholder.info(progress_text)
+        
+        single_clipping_df = _pull_single_onm_clipping(api_key, start_date, end_date, clipping_id, clipping_name, status_placeholder)
+        
+        if not single_clipping_df.empty:
+            all_dfs.append(single_clipping_df)
+            status_placeholder.success(f"✅ Selesai: '{clipping_name}' ({len(single_clipping_df)} artikel).")
+        else:
+            status_placeholder.warning(f"⚠️ Tidak ada data untuk clipping '{clipping_name}'.")
+        progress_bar.progress((i + 1) / total_clippings); time.sleep(1) 
+
+    if not all_dfs:
+        st.warning("Tidak ada data artikel yang berhasil ditarik dari semua clipping yang dipilih."); return []
+
+    final_df = pd.concat(all_dfs, ignore_index=True)
+    st.success(f"🎉 Semua data Online Media berhasil digabungkan ({len(final_df)} total artikel).")
+    return [final_df]
+
+# =====================  UI (Tidak ada perubahan signifikan, hanya penyesuaian kecil) =====================
+# Sisa kode UI sama persis dengan versi sebelumnya, karena perubahan utama ada di dalam fungsi pemrosesan data.
+# Anda bisa salin-tempel sisa kode dari Tahap 1 hingga Tahap 4 dari jawaban saya sebelumnya.
 st.set_page_config(page_title="Upload Data ➜ Google Sheets", page_icon="📄", layout="wide")
-
 col1, col2 = st.columns([3, 1])
 with col1: st.title("Upload File/Link/API ➜ Google Spreadsheet")
 with col2:
     if st.button("🔄 Reset Aplikasi", use_container_width=True, key="reset_top", help="Mulai ulang seluruh proses dari awal."):
         st.session_state.clear(); st.rerun()
 
-# ----------  1️⃣  PILIH SUMBER DATA  ----------
 if st.session_state.step == 1:
     st.header("1️⃣ Pilih sumber data")
     src_choice = st.radio("Bagaimana Anda ingin memasukkan data?", ("Unggah File (CSV/ZIP)", "Masukkan Tautan", "Tarik Data via API"), key="src_choice_key", horizontal=True)
     temp_dfs: List[pd.DataFrame] = []
-
     if src_choice == "Tarik Data via API":
         try: API_PASSWORD_FROM_SECRETS = st.secrets["API_PASSWORD"]
         except (FileNotFoundError, KeyError): st.error("Konfigurasi 'API_PASSWORD' tidak ditemukan di Secrets Management. Hubungi developer."); st.stop()
-
         password = st.text_input("Masukkan Password API", type="password", key="api_password")
         if password == API_PASSWORD_FROM_SECRETS:
             st.success("✅ Password benar. Silakan pilih parameter penarikan data.")
-            
-            def clear_all_filters():
-                st.session_state.selected_object_names = []
-                st.session_state.selected_label_names = []
-                st.session_state.selected_clipping_names = []
-
+            def clear_filter_selections():
+                keys_to_clear = ['selected_object_names', 'selected_label_names', 'selected_clipping_names']
+                for key in keys_to_clear:
+                    if key in st.session_state: st.session_state[key] = []
             all_projects = {**DEFAULT_PROJECTS, **st.session_state.added_projects}
             project_options = list(all_projects.keys()) + [ADD_NEW_PROJECT_OPTION]
-            selected_project_name = st.selectbox("Pilih Proyek:", project_options, key="project_selector", on_change=clear_all_filters)
-            
+            selected_project_name = st.selectbox("Pilih Proyek:", project_options, key="project_selector", on_change=clear_filter_selections)
             if selected_project_name == ADD_NEW_PROJECT_OPTION:
                 st.info("Tambahkan proyek baru untuk digunakan dalam sesi ini.")
                 with st.form("add_project_form_main"):
@@ -178,42 +271,39 @@ if st.session_state.step == 1:
                         st.success(f"Proyek '{new_proj_name}' berhasil ditambahkan. Silakan pilih dari daftar di atas."); time.sleep(2); st.rerun()
             else:
                 api_key = all_projects[selected_project_name]
-                # --- PERUBAHAN: Meminta jenis data terlebih dahulu ---
-                data_type_choice = st.radio("Pilih Jenis Data yang Akan Ditarik:", ("Social Media", "Online Media"), horizontal=True, key="data_type_selector")
-
+                data_type_choice = st.radio("Pilih Jenis Data yang Akan Ditarik:", ("Social Media", "Online Media"), horizontal=True, key="data_type_selector", on_change=clear_filter_selections)
                 with st.form("api_params_form"):
                     st.subheader(f"Parameter Penarikan Data {data_type_choice}")
                     col_tgl1, col_tgl2 = st.columns(2)
                     with col_tgl1: start_date = st.date_input("Tanggal Mulai", datetime.date.today() - datetime.timedelta(days=7))
                     with col_tgl2: end_date = st.date_input("Tanggal Akhir", datetime.date.today())
-
-                    # --- PERUBAHAN: Tampilkan filter kondisional ---
+                    with st.spinner("Mengambil daftar filter..."):
+                        if data_type_choice == "Social Media":
+                            object_list = get_api_list(api_key, "/social-media/keyword-list"); label_list = get_api_list(api_key, "/social-media/label-list")
+                        else:
+                            clipping_list = get_api_list(api_key, "/online-media/clipping-list")
                     if data_type_choice == "Social Media":
-                        with st.spinner("Mengambil daftar filter Socmed..."):
-                            object_list = get_api_list(api_key, "/social-media/keyword-list")
-                            label_list = get_api_list(api_key, "/social-media/label-list")
-                        
                         selected_objects, selected_labels = [], []
                         if object_list:
                             object_options = {f"{item['displayName']} ({item.get('streamType', 'N/A')})": item['id'] for item in object_list}
-                            st.session_state.selected_object_names = st.multiselect("Pilih Objek Individual (Opsional):", list(object_options.keys()), default=st.session_state.selected_object_names)
+                            select_all_objects = st.checkbox("Pilih Semua Objek", key="select_all_obj")
+                            default_obj = list(object_options.keys()) if select_all_objects else st.session_state.selected_object_names
+                            st.session_state.selected_object_names = st.multiselect("Pilih Objek Individual (Opsional):", list(object_options.keys()), default=default_obj)
                             selected_objects = [object_options[name] for name in st.session_state.selected_object_names]
                         if label_list:
                             label_options = {item['displayName']: item['id'] for item in label_list}
-                            st.session_state.selected_label_names = st.multiselect("Pilih Label/Grup (Opsional):", list(label_options.keys()), default=st.session_state.selected_label_names)
+                            select_all_labels = st.checkbox("Pilih Semua Label/Grup", key="select_all_lbl")
+                            default_lbl = list(label_options.keys()) if select_all_labels else st.session_state.selected_label_names
+                            st.session_state.selected_label_names = st.multiselect("Pilih Label/Grup (Opsional):", list(label_options.keys()), default=default_lbl)
                             selected_labels = [label_options[name] for name in st.session_state.selected_label_names]
-                    
-                    else: # Online Media
-                        with st.spinner("Mengambil daftar clipping..."):
-                            clipping_list = get_api_list(api_key, "/online-media/clipping-list")
-                        
-                        selected_clipping_id = ""
+                    else:
+                        selected_clipping_info = {}
                         if clipping_list:
                             clipping_options = {item['displayName']: item['id'] for item in clipping_list}
-                            # Untuk ONM, kita filter berdasarkan satu clipping saja sesuai struktur API
-                            selected_clipping_name = st.selectbox("Pilih Clipping:", list(clipping_options.keys()))
-                            selected_clipping_id = clipping_options.get(selected_clipping_name)
-
+                            select_all_clippings = st.checkbox("Pilih Semua Clipping", key="select_all_clipping")
+                            default_clipping = list(clipping_options.keys()) if select_all_clippings else st.session_state.selected_clipping_names
+                            st.session_state.selected_clipping_names = st.multiselect("Pilih Clipping (bisa lebih dari satu):", list(clipping_options.keys()), default=default_clipping)
+                            selected_clipping_info = {name: clipping_options[name] for name in st.session_state.selected_clipping_names}
                     submitted = st.form_submit_button("🚀 Tarik Data Sekarang!")
                     if submitted:
                         if start_date > end_date: st.error("Tanggal mulai tidak boleh lebih dari tanggal akhir.")
@@ -221,14 +311,12 @@ if st.session_state.step == 1:
                             with st.container():
                                 if data_type_choice == "Social Media":
                                     temp_dfs = pull_socmed_data_from_api(api_key, start_date, end_date, selected_objects, selected_labels)
-                                else: # Online Media
-                                    if not selected_clipping_id: st.warning("Harap pilih clipping terlebih dahulu."); st.stop()
-                                    temp_dfs = pull_onm_data_from_api(api_key, start_date, end_date, selected_clipping_id)
-                                
+                                else:
+                                    if not selected_clipping_info: st.warning("Harap pilih minimal satu clipping."); st.stop()
+                                    temp_dfs = pull_onm_data_for_multiple_clippings(api_key, start_date, end_date, selected_clipping_info)
                                 if temp_dfs:
                                     st.session_state.dfs = temp_dfs; st.session_state.step = 2; st.rerun()
                                 else: st.warning("Tidak ada data yang berhasil ditarik dari API.")
-        
         elif password: st.error("❌ Password salah. Silakan coba lagi.")
     else: 
         if src_choice == "Unggah File (CSV/ZIP)":
@@ -249,8 +337,6 @@ if st.session_state.step == 1:
                     for u in url_list: temp_dfs.extend(load_from_url(u))
         if temp_dfs: st.session_state.dfs = temp_dfs; st.session_state.step = 2; st.rerun()
 
-# ... (Sisa kode untuk Tahap 2, 3, dan 4 tidak berubah) ...
-# Salin sisa kode Anda (Tahap 2, 3, 4) persis seperti sebelumnya ke sini
 if st.session_state.step == 2:
     st.success(f"✅ Berhasil mengumpulkan {len(st.session_state.dfs)} file data.")
     st.header("2️⃣ Pengaturan Spreadsheet")
@@ -292,8 +378,8 @@ if st.session_state.step == 3:
             ronm_dfs, rsocmed_dfs, rfollower_dfs, unknown_dfs = [], [], [], []
             for df in dfs:
                 cols = {str(c).lower() for c in df.columns}
-                if "prvalue" in cols or "sourceName" in cols: ronm_dfs.append(df) # Kriteria ONM
-                elif "originalid" in cols or "fromname" in cols or "fromid" in cols: rsocmed_dfs.append(df) # Kriteria Socmed
+                if "pr value" in cols or "media" in cols: ronm_dfs.append(df)
+                elif "original id" in cols or "from name" in cols or "from id" in cols: rsocmed_dfs.append(df)
                 elif "social_media" in cols and len(cols) < 5: rfollower_dfs.append(df)
                 else: unknown_dfs.append(df)
         if not ronm_dfs and not rsocmed_dfs and not rfollower_dfs: st.error("❌ Tidak ada data yang cocok dengan skema. Proses dihentikan."); st.stop()
