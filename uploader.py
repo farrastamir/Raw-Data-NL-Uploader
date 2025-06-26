@@ -14,18 +14,15 @@ DEFAULT_PROJECTS = {
 }
 ADD_NEW_PROJECT_OPTION = "➕ Tambah Proyek Baru..."
 
-# --- PERUBAHAN: Mendefinisikan struktur kolom final sesuai CSV ---
 FINAL_SOCMED_COLUMNS = [
-    'Date', 'Original Id', 'From Id', 'From Name', 'Url', 'Content', 
-    'Sentiment', 'Keyword', 'Post Ownership', 'Social Media', 'Likes', 
+    'Date', 'Original Id', 'From Id', 'From Name', 'Url', 'Content',
+    'Sentiment', 'Keyword', 'Post Ownership', 'Social Media', 'Likes',
     'Comments', 'Shares', 'Engagement', 'Reach', 'Impression', 'Labels'
 ]
-
 FINAL_ONM_COLUMNS = [
-    'Date', 'Original Id', 'Media', 'Title', 'Content', 'Url', 
+    'Date', 'Original Id', 'Media', 'Title', 'Content', 'Url',
     'Sentiment', 'Journalist', 'Tier', 'PR Value', 'Labels'
 ]
-
 
 # =====================  Inisialisasi Session State =====================
 if 'dfs' not in st.session_state: st.session_state.dfs = []
@@ -35,8 +32,7 @@ if 'selected_object_names' not in st.session_state: st.session_state.selected_ob
 if 'selected_label_names' not in st.session_state: st.session_state.selected_label_names = []
 if 'selected_clipping_names' not in st.session_state: st.session_state.selected_clipping_names = []
 
-# =====================  FUNGSI BANTU (Tidak Berubah) =====================
-# (Salin semua fungsi bantu Anda dari kode asli ke sini)
+# =====================  FUNGSI BANTU =====================
 def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     return df.applymap(lambda x: str(x).lstrip("'") if isinstance(x, str) else x)
 def detect_delimiter(sample_text: str) -> str:
@@ -46,14 +42,14 @@ def truncate_long_texts(df: pd.DataFrame, max_allowed: int = 50_000, trunc_lengt
         return x[:trunc_length] if isinstance(x, str) and len(x) > max_allowed else x
     return df.applymap(_trunc)
 def standardize_dates(df: pd.DataFrame) -> pd.DataFrame:
-    for col in ("Date", "date_created", "date_published"): # Menambahkan "Date" untuk handle semua kasus
-        if col not in df.columns: continue
+    # Cek semua kemungkinan nama kolom tanggal
+    date_cols_to_check = [col for col in ["Date", "date_created", "date_published"] if col in df.columns]
+    for col in date_cols_to_check:
         def _convert(val):
             if pd.isna(val): return val
             try:
-                # Menggunakan errors='coerce' untuk mengubah format yang tidak valid menjadi NaT (Not a Time)
                 dt_obj = pd.to_datetime(val, errors='coerce')
-                if pd.isna(dt_obj): # Jika gagal, coba parsing manual
+                if pd.isna(dt_obj):
                      s = str(val).strip()
                      date_part, time_part = (s.split(" ", 1) + ["00:00:00"])[:2]
                      time_part = re.sub(r"(\d{1,2})\.(\d{2})(?:\.(\d{2}))?", lambda m: f"{m.group(1)}:{m.group(2)}" + (f":{m.group(3)}" if m.group(3) else ""), time_part)
@@ -62,10 +58,9 @@ def standardize_dates(df: pd.DataFrame) -> pd.DataFrame:
                      if time_part.count(":") == 1: time_part += ":00"
                      s_norm = f"{date_part} {time_part}"
                      dt_obj = pd.to_datetime(s_norm, dayfirst=True, errors="coerce")
-                # Format final
                 return dt_obj.strftime("%d/%m/%Y %H:%M:%S") if pd.notna(dt_obj) else val
             except Exception:
-                return val # Kembalikan nilai asli jika semua parsing gagal
+                return val
         df[col] = df[col].apply(_convert)
     return df
 def read_csv_from_bytes(b: bytes) -> pd.DataFrame:
@@ -101,7 +96,7 @@ def write_dataframe_in_chunks(ws, df: pd.DataFrame, start_row: int, replace_mode
             else: raise
     progress_placeholder.empty()
 
-# =====================  FUNGSI BARU UNTUK API  =====================
+# ===================== FUNGSI API (Format & Orchestration) =====================
 @st.cache_data(ttl=600)
 def get_api_list(_api_key: str, endpoint: str) -> List[Dict]:
     headers = {"X-API-KEY": _api_key}; url = f"https://external.backend.dashboard.nolimit.id/v1.0{endpoint}"
@@ -125,47 +120,23 @@ def pull_socmed_data_from_api(api_key: str, start_date: datetime.date, end_date:
             all_data.extend(page_data); progress_bar.progress(min(1.0, len(all_data) / ((page + 1) * 100)), f"Terkumpul {len(all_data)} data..."); page += 1; time.sleep(0.5)
         except requests.exceptions.RequestException as e: st.error(f"Gagal menghubungi API Socmed: {e}"); break
     if not all_data: return []
-    
-    # --- PERUBAHAN: Memformat DataFrame agar sesuai CSV ---
     df = pd.DataFrame(all_data)
-    
-    # Buat kolom baru dengan nilai default
-    df['Reach'] = 0
-    df['Impression'] = 0
-    df['Labels'] = '' # Label tidak dikembalikan per post, jadi dikosongkan
-    
-    # Ambil nilai keyword dengan aman
+    df['Reach'] = 0; df['Impression'] = 0; df['Labels'] = ''
     df['Keyword'] = df['keyword'].apply(lambda x: x.get('displayName', '') if isinstance(x, dict) else '')
-
-    # Ganti nama kolom dari API ke nama kolom di CSV
     df.rename(columns={
-        'timestamp': 'Date',
-        'originalId': 'Original Id',
-        'fromId': 'From Id',
-        'fromName': 'From Name',
-        'link': 'Url',
-        'content': 'Content',
-        'sentiment': 'Sentiment',
-        'postOwnership': 'Post Ownership',
-        'socialMedia': 'Social Media',
-        'likeCount': 'Likes',
-        'commentCount': 'Comments',
-        'shareCount': 'Shares',
-        'engagement': 'Engagement'
+        'timestamp': 'Date', 'originalId': 'Original Id', 'fromId': 'From Id',
+        'fromName': 'From Name', 'link': 'Url', 'content': 'Content',
+        'sentiment': 'Sentiment', 'postOwnership': 'Post Ownership',
+        'socialMedia': 'Social Media', 'likeCount': 'Likes', 'commentCount': 'Comments',
+        'shareCount': 'Shares', 'engagement': 'Engagement'
     }, inplace=True)
-    
-    # Pastikan semua kolom yang dibutuhkan ada, jika tidak, buat kolom kosong
     for col in FINAL_SOCMED_COLUMNS:
-        if col not in df.columns:
-            df[col] = ''
-            
-    # Urutkan kolom sesuai urutan final
+        if col not in df.columns: df[col] = ''
     df = df[FINAL_SOCMED_COLUMNS]
     return [df]
 
 def _pull_single_onm_clipping(api_key: str, start_date: datetime.date, end_date: datetime.date, clipping_id: str, clipping_name: str, status_placeholder) -> pd.DataFrame:
-    all_data = []
-    page = 1
+    all_data = []; page = 1
     while True:
         payload = {"timestamp_start": f"{start_date} 00:00:00", "timestamp_end": f"{end_date} 23:59:59", "clipping_id": clipping_id, "limit": 100, "page": page}
         headers = {"X-API-KEY": api_key, "Content-Type": "application/json"}; url = "https://external.backend.dashboard.nolimit.id/v1.0/online-media/article/get-article"
@@ -177,67 +148,39 @@ def _pull_single_onm_clipping(api_key: str, start_date: datetime.date, end_date:
             if not page_data: break 
             all_data.extend(page_data); page += 1; time.sleep(0.5)
         except requests.exceptions.RequestException: status_placeholder.warning(f"Gagal koneksi saat menarik halaman {page}. Lanjut..."); break
-    
     if not all_data: return pd.DataFrame()
-
-    # --- PERUBAHAN: Memformat DataFrame agar sesuai CSV ---
     df = pd.DataFrame(all_data)
-
-    # Buat kolom baru dengan nilai default
-    df['Tier'] = '' # Tier tidak ada di API
-    df['Labels'] = clipping_name # Isi label dengan nama clipping yang ditarik
-
-    # Gabungkan daftar jurnalis menjadi satu string
+    df['Tier'] = ''; df['Labels'] = clipping_name
     df['Journalist'] = df['writer'].apply(lambda x: ', '.join(x) if isinstance(x, list) else '')
-
-    # Ganti nama kolom dari API ke nama kolom di CSV
     df.rename(columns={
-        'datePublished': 'Date',
-        'originalId': 'Original Id',
-        'sourceName': 'Media',
-        'title': 'Title',
-        'content': 'Content',
-        'link': 'Url',
-        'sentiment': 'Sentiment',
+        'datePublished': 'Date', 'originalId': 'Original Id', 'sourceName': 'Media',
+        'title': 'Title', 'content': 'Content', 'link': 'Url', 'sentiment': 'Sentiment',
         'prValue': 'PR Value'
     }, inplace=True)
-    
-    # Pastikan semua kolom yang dibutuhkan ada
     for col in FINAL_ONM_COLUMNS:
-        if col not in df.columns:
-            df[col] = ''
-    
-    # Urutkan kolom sesuai urutan final
+        if col not in df.columns: df[col] = ''
     df = df[FINAL_ONM_COLUMNS]
     return df
 
 def pull_onm_data_for_multiple_clippings(api_key: str, start_date: datetime.date, end_date: datetime.date, clipping_info: Dict[str, str]) -> List[pd.DataFrame]:
     all_dfs = []; total_clippings = len(clipping_info)
     progress_bar = st.progress(0, "Memulai penarikan data Online Media...")
-    
     for i, (clipping_name, clipping_id) in enumerate(clipping_info.items()):
         progress_text = f"Memproses clipping '{clipping_name}' ({i+1} dari {total_clippings})..."
         status_placeholder = st.empty(); status_placeholder.info(progress_text)
-        
         single_clipping_df = _pull_single_onm_clipping(api_key, start_date, end_date, clipping_id, clipping_name, status_placeholder)
-        
         if not single_clipping_df.empty:
             all_dfs.append(single_clipping_df)
             status_placeholder.success(f"✅ Selesai: '{clipping_name}' ({len(single_clipping_df)} artikel).")
         else:
             status_placeholder.warning(f"⚠️ Tidak ada data untuk clipping '{clipping_name}'.")
         progress_bar.progress((i + 1) / total_clippings); time.sleep(1) 
-
-    if not all_dfs:
-        st.warning("Tidak ada data artikel yang berhasil ditarik dari semua clipping yang dipilih."); return []
-
+    if not all_dfs: st.warning("Tidak ada data artikel yang berhasil ditarik dari semua clipping yang dipilih."); return []
     final_df = pd.concat(all_dfs, ignore_index=True)
     st.success(f"🎉 Semua data Online Media berhasil digabungkan ({len(final_df)} total artikel).")
     return [final_df]
 
-# =====================  UI (Tidak ada perubahan signifikan, hanya penyesuaian kecil) =====================
-# Sisa kode UI sama persis dengan versi sebelumnya, karena perubahan utama ada di dalam fungsi pemrosesan data.
-# Anda bisa salin-tempel sisa kode dari Tahap 1 hingga Tahap 4 dari jawaban saya sebelumnya.
+# =====================  UI =====================
 st.set_page_config(page_title="Upload Data ➜ Google Sheets", page_icon="📄", layout="wide")
 col1, col2 = st.columns([3, 1])
 with col1: st.title("Upload File/Link/API ➜ Google Spreadsheet")
@@ -329,7 +272,7 @@ if st.session_state.step == 1:
                                 for name in z.namelist():
                                     if name.lower().endswith(".csv") and not name.startswith('__MACOSX'): temp_dfs.append(clean_dataframe(read_csv_from_bytes(z.read(name))))
                         elif f.name.lower().endswith('.csv'): temp_dfs.append(clean_dataframe(read_csv_from_bytes(f.read())))
-        else: # Masukkan Tautan
+        else:
             url_text = st.text_area("Tempel satu / lebih tautan (pisahkan dengan baris baru atau koma)", key="url_input")
             if url_text:
                 with st.spinner("Mengunduh dan memproses data dari tautan..."):
@@ -374,39 +317,67 @@ if st.session_state.step == 3:
         else:
             if uploaded_json is None: st.error("Silakan unggah file JSON terlebih dahulu."); st.stop()
             json_data = json.loads(uploaded_json.read().decode()); st.success("✅ File JSON berhasil diproses.")
+        
         with st.spinner("Mengklasifikasikan data..."):
             ronm_dfs, rsocmed_dfs, rfollower_dfs, unknown_dfs = [], [], [], []
             for df in dfs:
-                cols = {str(c).lower() for c in df.columns}
-                if "pr value" in cols or "media" in cols: ronm_dfs.append(df)
-                elif "original id" in cols or "from name" in cols or "from id" in cols: rsocmed_dfs.append(df)
-                elif "social_media" in cols and len(cols) < 5: rfollower_dfs.append(df)
-                else: unknown_dfs.append(df)
+                # --- PERUBAHAN: Logika Klasifikasi yang Diperbaiki ---
+                cols = {str(c).lower().replace(' ', ''): c for c in df.columns}
+                
+                # Prioritas 1: RFOLLOWER (jika hanya ada 'social_media' dan sedikit kolom lain, seperti dari file CSV sederhana)
+                # Ini menggunakan logika dari kode lama Anda sebagai prioritas.
+                if 'social_media' in cols and 'originalid' not in cols and 'prvalue' not in cols:
+                    rfollower_dfs.append(df)
+                # Prioritas 2: RONM
+                elif 'prvalue' in cols or 'sourcename' in cols or 'media' in cols:
+                    ronm_dfs.append(df)
+                # Prioritas 3: RSOCMED
+                elif 'originalid' in cols or 'fromname' in cols or 'fromid' in cols:
+                    rsocmed_dfs.append(df)
+                # Fallback jika masih ada 'social_media'
+                elif 'social_media' in cols:
+                    rfollower_dfs.append(df)
+                else:
+                    unknown_dfs.append(df)
+
         if not ronm_dfs and not rsocmed_dfs and not rfollower_dfs: st.error("❌ Tidak ada data yang cocok dengan skema. Proses dihentikan."); st.stop()
         targets = {"RONM": pd.concat(ronm_dfs, ignore_index=True) if ronm_dfs else None, "RSOCMED": pd.concat(rsocmed_dfs, ignore_index=True) if rsocmed_dfs else None, "RFOLLOWER": pd.concat(rfollower_dfs, ignore_index=True) if rfollower_dfs else None}
         creds = service_account.Credentials.from_service_account_info(json_data, scopes=["https://www.googleapis.com/auth/spreadsheets"]); gc = gspread.authorize(creds); sh = gc.open_by_key(SPREADSHEET_ID)
         st.write("---"); st.info("🚀 Memulai proses unggah..."); any_upload_success = False
+        
         for ws_name, df in targets.items():
             if df is None or df.empty: continue
             st.subheader(f"Mengunggah ke sheet: `{ws_name}`"); df = truncate_long_texts(standardize_dates(df))
             try: ws = sh.worksheet(ws_name)
             except gspread.exceptions.WorksheetNotFound: st.info(f"Worksheet '{ws_name}' tidak ditemukan, membuat baru..."); ws = sh.add_worksheet(title=ws_name, rows="1000", cols="50")
-            replace = upload_mode.startswith("Ganti")
+            
+            # --- PERUBAHAN: Logika upload RFOLLOWER yang diperbaiki dan dipisahkan ---
             if ws_name == "RFOLLOWER":
-                st.info(f"Mode RFOLLOWER: Menulis ulang data mulai dari baris 2."); st.info(f"Membersihkan data lama dari A2:ZZ di sheet '{ws_name}'..."); ws.batch_clear(['A2:ZZ'])
-                progress_placeholder = st.empty(); progress_placeholder.info(f"⏳ Mengunggah {len(df)} baris ke {ws_name}...")
+                st.info(f"Mode RFOLLOWER: Menulis ulang data (termasuk header) mulai dari baris 2.")
+                st.info(f"Membersihkan data lama dari A2:ZZ di sheet '{ws_name}'...")
+                ws.batch_clear(['A2:ZZ']) 
+                progress_placeholder = st.empty()
+                progress_placeholder.info(f"⏳ Mengunggah {len(df)} baris ke {ws_name}...")
+                # Tulis data baru mulai dari baris 2, termasuk header dari DataFrame.
                 set_with_dataframe(ws, df, row=2, include_column_header=True, resize=False)
-                progress_placeholder.empty(); st.success(f"✅ Selesai! {len(df)} baris berhasil diunggah ke worksheet **{ws_name}**"); any_upload_success = True; continue
+                progress_placeholder.empty(); st.success(f"✅ Selesai! {len(df)} baris berhasil diunggah ke worksheet **{ws_name}**"); any_upload_success = True
+                continue # Lanjut ke target berikutnya
+            
+            # Logika untuk RONM dan RSOCMED
+            replace = upload_mode.startswith("Ganti")
             if replace:
                 if ws_name == "RONM": clear_range = 'A:AG'
                 elif ws_name == "RSOCMED": clear_range = 'A:AZ'
                 else: clear_range = 'A:ZZ'
                 st.info(f"Mode Ganti: Membersihkan kolom {clear_range} di sheet '{ws_name}'..."); ws.batch_clear([clear_range])
                 next_row = 1; effective_replace_mode = True
-            else: existing_values = ws.get_all_values(); next_row = len(existing_values) + 1 if existing_values else 1; effective_replace_mode = False
+            else: # Mode Append
+                existing_values = ws.get_all_values(); next_row = len(existing_values) + 1 if existing_values else 1; effective_replace_mode = False
+            
             progress_placeholder = st.empty()
             write_dataframe_in_chunks(ws, df, start_row=next_row, replace_mode=effective_replace_mode, progress_placeholder=progress_placeholder)
             st.success(f"✅ Selesai! {len(df)} baris berhasil diunggah ke worksheet **{ws_name}**"); any_upload_success = True
+
         st.write("---")
         if any_upload_success: st.balloons(); st.success("🎉 Semua proses unggah telah selesai!")
         if unknown_dfs: st.warning(f"⚠️ Ditemukan {len(unknown_dfs)} file yang tidak cocok dengan skema dan tidak diunggah.")
