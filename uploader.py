@@ -1,4 +1,4 @@
-# =====================  IMPORT  =====================
+# =====================  IMPORT  =====================
 import streamlit as st
 import zipfile, io, re, json, traceback, requests, time
 import pandas as pd
@@ -7,8 +7,7 @@ from gspread_dataframe import set_with_dataframe
 from google.oauth2 import service_account
 from typing import List, Any
 
-# =====================  FUNGSI BANTU  =====================
-# --- Tidak ada perubahan pada fungsi bantu ---
+# =====================  FUNGSI BANTU  =====================
 def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     return df.applymap(lambda x: str(x).lstrip("'") if isinstance(x, str) else x)
 
@@ -51,13 +50,23 @@ def standardize_dates(df: pd.DataFrame) -> pd.DataFrame:
         df[col] = df[col].apply(_convert)
     return df
 
+### ✅ FUNGSI YANG DIPERBAIKI ADA DI SINI ###
 def read_csv_from_bytes(b: bytes) -> pd.DataFrame:
+    # Coba baca dengan UTF-8 terlebih dahulu, jika gagal, gunakan 'latin-1'
     try:
         sample = b[:2048].decode("utf-8", errors="ignore")
         delim = detect_delimiter(sample)
-        return pd.read_csv(io.BytesIO(b), delimiter=delim)
+        # Tambahkan parameter encoding='utf-8' secara eksplisit
+        return pd.read_csv(io.BytesIO(b), delimiter=delim, encoding='utf-8')
+    except UnicodeDecodeError:
+        # Jika terjadi error decoding, coba lagi dengan encoding 'latin-1'
+        st.warning("⚠️ Gagal membaca dengan UTF-8, mencoba lagi dengan encoding 'latin-1'.")
+        sample = b[:2048].decode("latin-1")
+        delim = detect_delimiter(sample)
+        return pd.read_csv(io.BytesIO(b), delimiter=delim, encoding='latin-1')
     except Exception:
-        return pd.read_csv(io.BytesIO(b), delimiter=';')
+        # Fallback jika ada error lain, tetap gunakan 'latin-1' untuk keamanan
+        return pd.read_csv(io.BytesIO(b), delimiter=';', encoding='latin-1')
 
 def load_from_url(url: str) -> List[pd.DataFrame]:
     dfs: List[pd.DataFrame] = []
@@ -100,7 +109,7 @@ def write_dataframe_in_chunks(ws, df: pd.DataFrame, start_row: int, replace_mode
                 raise
     progress_placeholder.empty()
 
-# =====================  UI  =====================
+# =====================  UI  =====================
 st.set_page_config(page_title="Upload CSV/ZIP ➜ Google Sheets", page_icon="📄", layout="wide")
 
 col1, col2 = st.columns([3, 1])
@@ -114,7 +123,7 @@ with col2:
 if 'dfs' not in st.session_state: st.session_state.dfs = []
 if 'step' not in st.session_state: st.session_state.step = 1
 
-# ----------  1️⃣  PILIH SUMBER DATA  ----------
+# ----------  1️⃣  PILIH SUMBER DATA  ----------
 if st.session_state.step == 1:
     st.header("1️⃣ Pilih sumber data")
     src_choice = st.selectbox("Bagaimana Anda ingin memasukkan data?", ("Unggah File (CSV/ZIP)", "Masukkan Tautan"), key="src_choice_key")
@@ -146,7 +155,7 @@ if st.session_state.step == 1:
         st.info("⌛ Unggah file atau masukkan tautan untuk melanjutkan.")
         st.stop()
 
-# ----------  2️⃣  PENGATURAN SPREADSHEET  ----------
+# ----------  2️⃣  PENGATURAN SPREADSHEET  ----------
 if st.session_state.step == 2:
     st.success(f"✅ Berhasil mengumpulkan {len(st.session_state.dfs)} file data.")
     st.header("2️⃣ Pengaturan Spreadsheet")
@@ -165,7 +174,7 @@ if st.session_state.step == 2:
         st.info("Masukkan link spreadsheet dan klik 'Konfirmasi' untuk melanjutkan.")
         st.stop()
 
-# ----------  3️⃣  AUTENTIKASI GOOGLE SHEETS & PROSES UTAMA ----------
+# ----------  3️⃣  AUTENTIKASI GOOGLE SHEETS & PROSES UTAMA ----------
 if st.session_state.step == 3:
     st.success(f"✅ Berhasil mengumpulkan {len(st.session_state.dfs)} file data.")
     st.success(f"✅ Link Spreadsheet tujuan: {st.session_state.sheet_link}")
