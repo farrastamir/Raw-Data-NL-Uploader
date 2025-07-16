@@ -1,4 +1,4 @@
-# =====================  IMPORT  =====================
+# =====================  IMPORT  =====================
 import streamlit as st
 import zipfile, io, re, json, traceback, requests, time
 import pandas as pd
@@ -7,7 +7,7 @@ from gspread_dataframe import set_with_dataframe
 from google.oauth2 import service_account
 from typing import List, Any
 
-# =====================  FUNGSI BANTU  =====================
+# ... (semua fungsi bantu tetap sama) ...
 def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     return df.applymap(lambda x: str(x).lstrip("'") if isinstance(x, str) else x)
 
@@ -50,22 +50,17 @@ def standardize_dates(df: pd.DataFrame) -> pd.DataFrame:
         df[col] = df[col].apply(_convert)
     return df
 
-### ✅ FUNGSI YANG DIPERBAIKI ADA DI SINI ###
 def read_csv_from_bytes(b: bytes) -> pd.DataFrame:
-    # Coba baca dengan UTF-8 terlebih dahulu, jika gagal, gunakan 'latin-1'
     try:
         sample = b[:2048].decode("utf-8", errors="ignore")
         delim = detect_delimiter(sample)
-        # Tambahkan parameter encoding='utf-8' secara eksplisit
         return pd.read_csv(io.BytesIO(b), delimiter=delim, encoding='utf-8')
     except UnicodeDecodeError:
-        # Jika terjadi error decoding, coba lagi dengan encoding 'latin-1'
         st.warning("⚠️ Gagal membaca dengan UTF-8, mencoba lagi dengan encoding 'latin-1'.")
         sample = b[:2048].decode("latin-1")
         delim = detect_delimiter(sample)
         return pd.read_csv(io.BytesIO(b), delimiter=delim, encoding='latin-1')
     except Exception:
-        # Fallback jika ada error lain, tetap gunakan 'latin-1' untuk keamanan
         return pd.read_csv(io.BytesIO(b), delimiter=';', encoding='latin-1')
 
 def load_from_url(url: str) -> List[pd.DataFrame]:
@@ -109,7 +104,7 @@ def write_dataframe_in_chunks(ws, df: pd.DataFrame, start_row: int, replace_mode
                 raise
     progress_placeholder.empty()
 
-# =====================  UI  =====================
+# ... (UI dari langkah 1 dan 2 tetap sama) ...
 st.set_page_config(page_title="Upload CSV/ZIP ➜ Google Sheets", page_icon="📄", layout="wide")
 
 col1, col2 = st.columns([3, 1])
@@ -123,7 +118,7 @@ with col2:
 if 'dfs' not in st.session_state: st.session_state.dfs = []
 if 'step' not in st.session_state: st.session_state.step = 1
 
-# ----------  1️⃣  PILIH SUMBER DATA  ----------
+# ----------  1️⃣  PILIH SUMBER DATA  ----------
 if st.session_state.step == 1:
     st.header("1️⃣ Pilih sumber data")
     src_choice = st.selectbox("Bagaimana Anda ingin memasukkan data?", ("Unggah File (CSV/ZIP)", "Masukkan Tautan"), key="src_choice_key")
@@ -155,7 +150,7 @@ if st.session_state.step == 1:
         st.info("⌛ Unggah file atau masukkan tautan untuk melanjutkan.")
         st.stop()
 
-# ----------  2️⃣  PENGATURAN SPREADSHEET  ----------
+# ----------  2️⃣  PENGATURAN SPREADSHEET  ----------
 if st.session_state.step == 2:
     st.success(f"✅ Berhasil mengumpulkan {len(st.session_state.dfs)} file data.")
     st.header("2️⃣ Pengaturan Spreadsheet")
@@ -173,8 +168,8 @@ if st.session_state.step == 2:
     if not st.session_state.get('sheet_link'):
         st.info("Masukkan link spreadsheet dan klik 'Konfirmasi' untuk melanjutkan.")
         st.stop()
-
-# ----------  3️⃣  AUTENTIKASI GOOGLE SHEETS & PROSES UTAMA ----------
+        
+# ----------  3️⃣  AUTENTIKASI GOOGLE SHEETS & PROSES UTAMA ----------
 if st.session_state.step == 3:
     st.success(f"✅ Berhasil mengumpulkan {len(st.session_state.dfs)} file data.")
     st.success(f"✅ Link Spreadsheet tujuan: {st.session_state.sheet_link}")
@@ -201,6 +196,7 @@ if st.session_state.step == 3:
 
     try:
         st.info("Mempersiapkan kredensial...")
+        # ... (logika kredensial tetap sama) ...
         if json_opt == "Gunakan JSON default di Drive":
             default_link = "https://drive.google.com/file/d/1VRpKOpI3R918d5voY70wi9CsDRBwDuRl/view?usp=drive_link"
             fid = re.search(r"/d/([\w-]+)", default_link).group(1)
@@ -221,12 +217,18 @@ if st.session_state.step == 3:
                 cols = {str(c).lower() for c in df.columns}
                 if "tier" in cols:
                     ronm_dfs.append(df)
+                
+                ### LOGIKA YANG TEPAT UNTUK KASUS ANDA ###
+                # Kode ini secara dinamis mencari kolom 'original_id' dan 'label',
+                # lalu menyalin semua data di antara keduanya.
+                # Ini akan otomatis beradaptasi jika 'label' pindah ke kolom BA.
                 elif {"original_id", "label"}.issubset(cols):
                     start_col = next((c for c in df.columns if str(c).lower() == 'original_id'), None)
                     end_col = next((c for c in df.columns if str(c).lower() == 'label'), None)
                     if start_col and end_col:
                         start_idx, end_idx = df.columns.get_loc(start_col), df.columns.get_loc(end_col)
                         rsocmed_dfs.append(df.iloc[:, start_idx : end_idx + 1])
+                
                 elif "social_media" in cols:
                     rfollower_dfs.append(df)
                 else:
@@ -265,26 +267,26 @@ if st.session_state.step == 3:
 
             replace = upload_mode.startswith("Ganti")
             
-            ### REVISI PERMINTAAN: Logika penghapusan spesifik berdasarkan nama worksheet ###
-            
-            # Kondisi 1: Perilaku khusus untuk RFOLLOWER
+            # ... (logika untuk RFOLLOWER tetap sama) ...
             if ws_name == "RFOLLOWER":
                 st.info(f"Mode RFOLLOWER: Menulis ulang data mulai dari baris 2.")
                 st.info(f"Membersihkan data lama dari A2:ZZ di sheet '{ws_name}'...")
                 ws.batch_clear(['A2:ZZ']) 
-                # Untuk RFOLLOWER, kita langsung tulis semua data termasuk header di baris 2
                 progress_placeholder = st.empty()
                 progress_placeholder.info(f"⏳ Mengunggah {len(df)} baris ke {ws_name}...")
                 set_with_dataframe(ws, df, row=2, include_column_header=True, resize=False)
                 progress_placeholder.empty()
                 st.success(f"✅ Selesai! {len(df)} baris berhasil diunggah ke worksheet **{ws_name}**")
                 any_upload_success = True
-                continue # Lanjut ke iterasi berikutnya
+                continue
 
-            # Kondisi 2: Perilaku untuk sheet lain (RONM, RSOCMED)
             if replace:
                 if ws_name == "RONM": clear_range = 'A:AG'
-                elif ws_name == "RSOCMED": clear_range = 'A:AZ'
+                
+                ### PERUBAHAN EKSPLISIT SESUAI PERMINTAAN ###
+                # Rentang penghapusan diubah secara permanen ke 'A:BA'.
+                elif ws_name == "RSOCMED": clear_range = 'A:BA'
+                
                 else: clear_range = 'A:ZZ'
                 
                 st.info(f"Mode Ganti: Membersihkan kolom {clear_range} di sheet '{ws_name}'...")
@@ -304,6 +306,7 @@ if st.session_state.step == 3:
             st.success(f"✅ Selesai! {len(df)} baris berhasil diunggah ke worksheet **{ws_name}**")
             any_upload_success = True
 
+        # ... (sisa kode sampai akhir tetap sama) ...
         st.write("---")
         if any_upload_success:
             st.balloons()
