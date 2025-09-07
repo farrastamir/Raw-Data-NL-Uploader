@@ -7,27 +7,33 @@ from gspread_dataframe import set_with_dataframe
 from google.oauth2 import service_account
 from typing import List, Any
 
-# ... (semua fungsi bantu tetap sama) ...
+# =====================  FUNGSI BANTU  =====================
 def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """Membersihkan apostrof di awal string."""
     return df.applymap(lambda x: str(x).lstrip("'") if isinstance(x, str) else x)
 
 def detect_delimiter(sample_text: str) -> str:
+    """Mendeteksi delimiter CSV berdasarkan jumlah kemunculan."""
     return ";" if sample_text.count(";") > sample_text.count(",") else ","
 
 def truncate_long_texts(df: pd.DataFrame, max_allowed: int = 50_000, trunc_length: int = 20_000) -> pd.DataFrame:
+    """Memotong teks yang terlalu panjang untuk sel Google Sheets."""
     def _trunc(x):
         return x[:trunc_length] if isinstance(x, str) and len(x) > max_allowed else x
     return df.applymap(_trunc)
 
 def _fix_time_dots(t: str) -> str:
+    """Mengganti format waktu HH.MM.SS menjadi HH:MM:SS."""
     return re.sub(r"(\d{1,2})\.(\d{2})(?:\.(\d{2}))?", lambda m: f"{m.group(1)}:{m.group(2)}" + (f":{m.group(3)}" if m.group(3) else ""), t)
 
 def _to_full_year(year: int) -> int:
+    """Mengonversi tahun 2-digit menjadi 4-digit."""
     if year < 100:
         return 2000 + year if year <= 30 else 1900 + year
     return year
 
 def standardize_dates(df: pd.DataFrame) -> pd.DataFrame:
+    """Menstandarkan kolom tanggal ke format DD/MM/YYYY HH.MM.SS."""
     for col in ("date_created", "date_published"):
         if col not in df.columns:
             continue
@@ -51,6 +57,7 @@ def standardize_dates(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def read_csv_from_bytes(b: bytes) -> pd.DataFrame:
+    """Membaca data CSV dari bytes, mencoba beberapa encoding."""
     try:
         sample = b[:2048].decode("utf-8", errors="ignore")
         delim = detect_delimiter(sample)
@@ -61,9 +68,11 @@ def read_csv_from_bytes(b: bytes) -> pd.DataFrame:
         delim = detect_delimiter(sample)
         return pd.read_csv(io.BytesIO(b), delimiter=delim, encoding='latin-1')
     except Exception:
+        # Fallback jika semuanya gagal
         return pd.read_csv(io.BytesIO(b), delimiter=';', encoding='latin-1')
 
 def load_from_url(url: str) -> List[pd.DataFrame]:
+    """Mengunduh dan membaca file CSV/ZIP dari URL."""
     dfs: List[pd.DataFrame] = []
     try:
         r = requests.get(url.strip())
@@ -72,7 +81,7 @@ def load_from_url(url: str) -> List[pd.DataFrame]:
         if zipfile.is_zipfile(io.BytesIO(content)):
             with zipfile.ZipFile(io.BytesIO(content), "r") as z:
                 for name in z.namelist():
-                    if name.lower().endswith(".csv"):
+                    if name.lower().endswith(".csv") and not name.startswith('__MACOSX'):
                         dfs.append(clean_dataframe(read_csv_from_bytes(z.read(name))))
         else:
             dfs.append(clean_dataframe(read_csv_from_bytes(content)))
@@ -81,6 +90,7 @@ def load_from_url(url: str) -> List[pd.DataFrame]:
     return dfs
 
 def write_dataframe_in_chunks(ws, df: pd.DataFrame, start_row: int, replace_mode: bool, progress_placeholder: Any):
+    """Menulis DataFrame ke worksheet dalam batch kecil untuk menghindari API error."""
     rows_per_batch = 10_000
     row_ptr = 0
     total_rows = len(df)
@@ -104,7 +114,7 @@ def write_dataframe_in_chunks(ws, df: pd.DataFrame, start_row: int, replace_mode
                 raise
     progress_placeholder.empty()
 
-# ... (UI dari langkah 1 dan 2 tetap sama) ...
+# =====================  APLIKASI STREAMLIT  =====================
 st.set_page_config(page_title="Upload CSV/ZIP ➜ Google Sheets", page_icon="📄", layout="wide")
 
 col1, col2 = st.columns([3, 1])
@@ -175,12 +185,14 @@ if st.session_state.step == 3:
     st.success(f"✅ Link Spreadsheet tujuan: {st.session_state.sheet_link}")
     st.success(f"✅ Mode Unggah: {st.session_state.upload_mode}")
     st.header("3️⃣ Autentikasi & Mulai Proses")
+    
     with st.form("json_auth_form"):
         json_opt = st.radio("Pilih sumber Service-Account JSON:", ("Gunakan JSON default di Drive", "Unggah file JSON sendiri"), key="json_opt_key")
         uploaded_json = None
         if json_opt == "Unggah file JSON sendiri":
             uploaded_json = st.file_uploader("Unggah file .json", type="json", key="json_uploader")
         proceed = st.form_submit_button("🚀 Mulai Proses Upload!")
+    
     if not proceed:
         st.info("Pilih metode autentikasi dan klik 'Mulai Proses Upload!'")
         st.stop()
@@ -196,7 +208,6 @@ if st.session_state.step == 3:
 
     try:
         st.info("Mempersiapkan kredensial...")
-        # ... (logika kredensial tetap sama) ...
         if json_opt == "Gunakan JSON default di Drive":
             default_link = "https://drive.google.com/file/d/1VRpKOpI3R918d5voY70wi9CsDRBwDuRl/view?usp=drive_link"
             fid = re.search(r"/d/([\w-]+)", default_link).group(1)
@@ -212,16 +223,35 @@ if st.session_state.step == 3:
             st.success("✅ File JSON berhasil diproses.")
 
         with st.spinner("Mengklasifikasikan data..."):
-            ronm_dfs, rsocmed_dfs, rfollower_dfs, unknown_dfs = [], [], [], []
+            ronm_dfs, rofm_dfs, rsocmed_dfs, rfollower_dfs, unknown_dfs = [], [], [], [], [] # Tambahkan rofm_dfs
+            
             for df in dfs:
                 cols = {str(c).lower() for c in df.columns}
+                
                 if "tier" in cols:
                     ronm_dfs.append(df)
+                    
+                # ### LOGIKA BARU UNTUK ROFM ###
+                # Cek apakah kolom 'attachment' ada.
+                elif "attachment" in cols:
+                    try:
+                        # Cari nama kolom 'Clipping' secara case-insensitive
+                        clipping_col_name = next((c for c in df.columns if str(c).lower() == 'clipping'), None)
+                        
+                        if clipping_col_name:
+                            # Dapatkan indeks posisi kolom 'Clipping'
+                            clipping_idx = df.columns.get_loc(clipping_col_name)
+                            # Ambil semua kolom dari awal hingga 'Clipping' (inklusif)
+                            rofm_df_sliced = df.iloc[:, :clipping_idx + 1]
+                            rofm_dfs.append(rofm_df_sliced)
+                        else:
+                            # Jika ada 'attachment' tapi tidak ada 'Clipping', anggap file tak dikenal
+                            st.warning(f"⚠️ File dengan kolom 'attachment' terdeteksi, tetapi kolom 'Clipping' tidak ditemukan. File ini tidak diunggah.")
+                            unknown_dfs.append(df)
+                    except Exception as e:
+                        st.warning(f"⚠️ Gagal memproses file untuk ROFM: {e}")
+                        unknown_dfs.append(df)
                 
-                ### LOGIKA YANG TEPAT UNTUK KASUS ANDA ###
-                # Kode ini secara dinamis mencari kolom 'original_id' dan 'label',
-                # lalu menyalin semua data di antara keduanya.
-                # Ini akan otomatis beradaptasi jika 'label' pindah ke kolom BA.
                 elif {"original_id", "label"}.issubset(cols):
                     start_col = next((c for c in df.columns if str(c).lower() == 'original_id'), None)
                     end_col = next((c for c in df.columns if str(c).lower() == 'label'), None)
@@ -231,15 +261,19 @@ if st.session_state.step == 3:
                 
                 elif "social_media" in cols:
                     rfollower_dfs.append(df)
+                    
                 else:
                     unknown_dfs.append(df)
 
-        if not ronm_dfs and not rsocmed_dfs and not rfollower_dfs:
-            st.error("❌ Tidak ada data yang cocok dengan skema. Proses dihentikan.")
+        # Cek apakah ada data yang akan diunggah
+        if not any([ronm_dfs, rofm_dfs, rsocmed_dfs, rfollower_dfs]):
+            st.error("❌ Tidak ada data yang cocok dengan skema mana pun. Proses dihentikan.")
             st.stop()
 
+        # Gabungkan semua dataframe yang telah diklasifikasikan
         targets = {
             "RONM": pd.concat(ronm_dfs, ignore_index=True) if ronm_dfs else None,
+            "ROFM": pd.concat(rofm_dfs, ignore_index=True) if rofm_dfs else None, # Tambahkan ROFM ke target
             "RSOCMED": pd.concat(rsocmed_dfs, ignore_index=True) if rsocmed_dfs else None,
             "RFOLLOWER": pd.concat(rfollower_dfs, ignore_index=True) if rfollower_dfs else None,
         }
@@ -263,18 +297,17 @@ if st.session_state.step == 3:
                 ws = sh.worksheet(ws_name)
             except gspread.exceptions.WorksheetNotFound:
                 st.info(f"Worksheet '{ws_name}' tidak ditemukan, membuat baru...")
-                ws = sh.add_worksheet(title=ws_name, rows="1000", cols="50")
+                ws = sh.add_worksheet(title=ws_name, rows="1000", cols=len(df.columns) + 5)
 
             replace = upload_mode.startswith("Ganti")
             
-            # ... (logika untuk RFOLLOWER tetap sama) ...
             if ws_name == "RFOLLOWER":
                 st.info(f"Mode RFOLLOWER: Menulis ulang data mulai dari baris 2.")
                 st.info(f"Membersihkan data lama dari A2:ZZ di sheet '{ws_name}'...")
                 ws.batch_clear(['A2:ZZ']) 
                 progress_placeholder = st.empty()
                 progress_placeholder.info(f"⏳ Mengunggah {len(df)} baris ke {ws_name}...")
-                set_with_dataframe(ws, df, row=2, include_column_header=True, resize=False)
+                set_with_dataframe(ws, df, row=2, include_column_header=False, resize=False) # Header RFOLLOWER biasanya statis
                 progress_placeholder.empty()
                 st.success(f"✅ Selesai! {len(df)} baris berhasil diunggah ke worksheet **{ws_name}**")
                 any_upload_success = True
@@ -282,12 +315,8 @@ if st.session_state.step == 3:
 
             if replace:
                 if ws_name == "RONM": clear_range = 'A:AG'
-                
-                ### PERUBAHAN EKSPLISIT SESUAI PERMINTAAN ###
-                # Rentang penghapusan diubah secara permanen ke 'A:BA'.
                 elif ws_name == "RSOCMED": clear_range = 'A:BA'
-                
-                else: clear_range = 'A:ZZ'
+                else: clear_range = 'A:ZZ' # Berlaku untuk ROFM dan lainnya
                 
                 st.info(f"Mode Ganti: Membersihkan kolom {clear_range} di sheet '{ws_name}'...")
                 ws.batch_clear([clear_range])
@@ -296,7 +325,7 @@ if st.session_state.step == 3:
             else: # Mode Append
                 existing_values = ws.get_all_values()
                 next_row = len(existing_values) + 1 if existing_values else 1
-                effective_replace_mode = False
+                effective_replace_mode = (next_row == 1) # Header hanya jika sheet kosong
             
             progress_placeholder = st.empty()
             write_dataframe_in_chunks(
@@ -306,7 +335,6 @@ if st.session_state.step == 3:
             st.success(f"✅ Selesai! {len(df)} baris berhasil diunggah ke worksheet **{ws_name}**")
             any_upload_success = True
 
-        # ... (sisa kode sampai akhir tetap sama) ...
         st.write("---")
         if any_upload_success:
             st.balloons()
