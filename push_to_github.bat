@@ -17,8 +17,8 @@ set /p commit_msg="Masukkan pesan commit (tekan Enter untuk default 'Update cont
 if "%commit_msg%"=="" set commit_msg=Update content
 git commit -m "%commit_msg%"
 
-echo Melakukan Push ke Main...
-git push origin main
+echo Melakukan Push ke Main (Force)...
+git push -u origin main --force
 
 echo Selesai!
 pause
