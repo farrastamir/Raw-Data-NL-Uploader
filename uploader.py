@@ -22,6 +22,8 @@ def get_column_letter(col_index: int) -> str:
 
 def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     """Membersihkan apostrof di awal string."""
+    if hasattr(df, 'map'):
+        return df.map(lambda x: str(x).lstrip("'") if isinstance(x, str) else x)
     return df.applymap(lambda x: str(x).lstrip("'") if isinstance(x, str) else x)
 
 def detect_delimiter(sample_text: str) -> str:
@@ -32,6 +34,8 @@ def truncate_long_texts(df: pd.DataFrame, max_allowed: int = 50_000, trunc_lengt
     """Memotong teks yang terlalu panjang untuk sel Google Sheets."""
     def _trunc(x):
         return x[:trunc_length] if isinstance(x, str) and len(x) > max_allowed else x
+    if hasattr(df, 'map'):
+        return df.map(_trunc)
     return df.applymap(_trunc)
 
 def _fix_time_dots(t: str) -> str:
@@ -335,12 +339,8 @@ if st.session_state.step == 3:
                 continue
 
             if replace:
-                if ws_name == "RONM": 
-                    clear_range = 'A:AG'
-                elif ws_name == "RSOCMED": 
-                    clear_range = 'A:BA'
-                elif ws_name == "ROFM":
-                    # LOGIKA REVISI UNTUK ROFM
+                if ws_name in ["RONM", "RSOCMED", "ROFM"]:
+                    # LOGIKA REVISI UNTUK MENAMPUNG PENAMBAHAN KOLOM
                     num_cols = len(df.columns)
                     last_col_letter = get_column_letter(num_cols - 1)
                     clear_range = f'A:{last_col_letter}'
