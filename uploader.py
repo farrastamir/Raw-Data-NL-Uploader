@@ -322,7 +322,7 @@ if st.session_state.step == 3:
                 ws = sh.worksheet(ws_name)
             except gspread.exceptions.WorksheetNotFound:
                 st.info(f"Worksheet '{ws_name}' tidak ditemukan, membuat baru...")
-                ws = sh.add_worksheet(title=ws_name, rows="1000", cols=len(df.columns) + 5)
+                ws = sh.add_worksheet(title=ws_name, rows=1000, cols=len(df.columns) + 5)
 
             replace = upload_mode.startswith("Ganti")
             
