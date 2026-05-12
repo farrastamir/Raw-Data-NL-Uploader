@@ -323,7 +323,10 @@ if 'app_mode' not in st.session_state: st.session_state.app_mode = "normal"
 # Password check or mode selection
 with st.sidebar:
     st.header("⚙️ Mode Aplikasi")
+
+    # Check if the user has input the datachecking password
     mode_input = st.text_input("Password (Opsional):", type="password")
+
     if mode_input == "datachecking":
         st.session_state.app_mode = "checking_only"
         st.success("Mode Data Checking Aktif!")
